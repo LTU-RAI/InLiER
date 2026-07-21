@@ -1,4 +1,304 @@
-# InLiER
-Learning-Free Heterogeneous LiDAR Place Recognition via Intermediate Mixed-Radix Structural Keypoint Tokenization
+<div align="center">
 
-Accepted at RA-L, code coming soon!
+# InLiER
+## Learning-Free Heterogeneous LiDAR Place Recognition via Intermediate Mixed-Radix Structural Keypoint Tokenization
+
+[![arXiv](https://img.shields.io/badge/Arxiv-2607.16862-b31b1b.svg?logo=arXiv)](https://arxiv.org/abs/2607.16862)
+[![DOI:10.XXXX/LRA.2026.XXXXXXX](https://img.shields.io/badge/IEEE-10.XXXX/LRA.2026.XXXXXXX-00629B.svg)](https://doi.org/10.XXXX/LRA.2026.XXXXXXX)
+  <a href="https://www.youtube.com/"><img src="https://badges.aleen42.com/src/youtube.svg" alt="YouTube" /></a>
+
+![Python](https://img.shields.io/badge/Python-3670A0?logo=python&logoColor=ffdd54)
+[![MIT License](https://img.shields.io/badge/License-MIT-green.svg)](https://choosealicense.com/licenses/mit/)
+![Linux](https://img.shields.io/badge/Linux-FCC624?logo=linux&logoColor=black)
+
+[**Nikolaos Stathoulopoulos**](https://github.com/nstathou) · [**George Nikolakopoulos**](https://github.com/geonikolak)
+
+</div>
+
+<p align=center>
+  <img src="figures/InLiER-pipeline_git.png" alt="InLiER pipeline" width="65%"/>
+</p>
+
+## 💡 Introduction
+
+**InLiER** (**In**termediate **Li**DAR **E**ncoding for **R**etrieval) is a **learning-free** place recognition pipeline for **heterogeneous** LiDAR sensors — spinning, solid-state, and FMCW units with different fields of view, resolutions, and scanning patterns. Instead of encoding a scan directly into a descriptor, InLiER inserts an **intermediate representation**: height-sliced structural keypoints are each mapped to a compact **mixed-radix token** that encodes height, radial distance, local shape, and azimuth. The same vocabulary is then re-organized on the fly across three retrieval stages, yielding fast rotation-invariant retrieval, yaw estimation and reranking, and full 6-DoF pose verification from a single sub-2KB representation.
+
+<p align=center>
+  <img src="figures/InLiER-keypoint-extraction_git.png" alt="Intermediate keypoint and token extraction" width="49.5%"/>
+  <img src="figures/InLiER-keys_git.png" alt="Intermediate keypoint and token extraction" width="49.5%"/>
+</p>
+
+The pipeline re-organizes one token vocabulary across three stages:
+- 🌿 <span style="color:green">**MINT**</span> *(Minimum-ceiling INTersection)* — height-ceiling histogram intersection for fast, rotation-invariant shortlisting.
+- 💥 <span style="color:red">**BEAM**</span> *(Binary Elevation-Azimuth Matching)* — bitmask alignment for yaw estimation and reranking.
+- ✔️ **Verify** — token-guided geometric verification for 6-DoF pose estimation.
+
+## 📋 Table of Contents
+
+- [💡 Introduction](#-introduction)
+- [🚀 Setup](#-setup) — [Prerequisites](#prerequisites) • [Installation](#installation) • [Environment Setup](#environment-setup)
+- [🕹️ Run the Example](#️-run-the-example) — [Dataset Setup](#dataset-setup) • [Building Overlap GT](#building-overlap-ground-truth) • [Validating Overlaps](#validate-calculated-overlaps) • [Configuration](#configuration) • [Evaluation](#running-the-evaluation) • [Visualization](#visualization)
+- [🗃️ Test Your Own Data](#️-test-your-own-data) — [Dataset Layout](#dataset-layout) • [Overlap Ground Truth](#overlap-ground-truth) • [Evaluation](#evaluation)
+- [🔜 Coming Soon](#-coming-soon) — [C++ Implementation](#c-implementation) • [ROS2 Support](#ros2-support)
+- [🙏 Acknowledgements](#-acknowledgements)
+- [📝 Citation](#-citation)
+- [📬 Contact](#-contact)
+
+## 🚀 Setup
+
+### Prerequisites
+
+- Python ≥ 3.10
+- The core library depends on **NumPy** and [`small_gicp`](https://github.com/koide3/small_gicp) (used for the GICP-based 6-DoF pose refinement). The evaluation and visualization tools additionally use `open3d`, `scipy`, `pyyaml`, `tqdm`, `matplotlib`, and `pandas` (installed via extras below).
+
+### Installation
+
+```bash
+git clone https://github.com/LTU-RAI/InLiER.git
+cd InLiER
+```
+
+### Environment Setup
+
+#### Using Conda (Recommended)
+
+```bash
+conda create -n inlier python=3.10
+conda activate inlier
+pip install -e ".[eval]"
+```
+
+#### Using pip with venv
+
+```bash
+python -m venv inlier-env
+source inlier-env/bin/activate
+pip install -e ".[eval]"
+```
+
+The `[eval]` extra installs everything the evaluation workflow needs — overlap-GT building, the HeLiPR evaluation, and the playback visualization. Install just the core library (no evaluation scripts) with `pip install -e .`
+
+## 🕹️ Run the Example
+
+This walks through reproducing our HeLiPR results on the Roundabout01 (Ouster OS2-128, database) ← Roundabout03 (Aeva Aeries II, query) pair — a heterogeneous, spinning-vs-solid-state setup. The full pipeline runs in three steps: build the overlap ground truth, run the evaluation, then (optionally) replay the results. We provide the precomputed overlap matrix for this pair under [`overlap_matrices/`](overlap_matrices), so you can skip straight to [Running the Evaluation](#running-the-evaluation) if you don't want to regenerate it.
+
+### Dataset Setup
+
+InLiER is evaluated on the [**HeLiPR**](https://sites.google.com/view/heliprdataset) benchmark. The loader expects the following layout under the dataset root:
+
+```text
+HeLiPR/
+└── <Sequence>/                          # e.g. Roundabout01, Roundabout03, ...
+    ├── LiDAR/                            # raw scans, as distributed by HeLiPR
+    │   └── <Sensor>/                     # Aeva | Avia | Ouster | Velodyne
+    │       └── *.bin
+    ├── LiDAR_GT/
+    │   └── global_<Sensor>_gt.txt        # ground-truth poses (t x y z qx qy qz qw)
+    └── Undistorted/                      # generated — see below
+        └── <Sensor>/
+            └── *.bin
+```
+
+The raw HeLiPR scans are motion-distorted. All evaluation scripts ([`build_overlap_data.py`](evaluation/scripts/build_overlap_data.py), [`evaluate_inlier_helipr.py`](evaluation/evaluate_inlier_helipr.py)) read from `Undistorted/`, not `LiDAR/`, so it must be populated before running anything. Undistort and accumulate the raw scans with the [**HeLiPR-Pointcloud-Toolbox**](https://github.com/minwoo0611/HeLiPR-Pointcloud-Toolbox), using [`config/HeLiPR-Toolbox/config.yaml`](config/HeLiPR-Toolbox/config.yaml) as a starting point — it holds the exact settings we used (frame accumulation, downsampling, cropping) to generate the scans in our results. Adjust `Path.binPath` / `Path.trajPath` / `Path.savePath` per sequence and sensor, then point `savePath` at the corresponding `<Sequence>/Undistorted/<Sensor>/` folder above.
+
+### Building Overlap Ground Truth
+
+Precompute the pairwise scan-overlap matrices used to label true/false positives:
+
+```bash
+python3 evaluation/scripts/build_overlap_data.py \
+    --dataset_type helipr \
+    --dataset /path/to/HeLiPR \
+    --db_sequence Roundabout01 --q_sequence Roundabout03 \
+    --pairs O-Aeva \
+    --output_dir overlap_matrices \
+    --voxel_size 0.5 --distance_threshold 100
+```
+
+- `--pairs` is `<DB sensor>-<Q sensor>`; here `O-Aeva` means the Roundabout01 **Ouster** scans are the database and the Roundabout03 **Aeva** scans are the query.
+- `--voxel_size` is the voxel size δ (m) used when computing per-voxel overlap between a DB/Q scan pair — smaller values are stricter (more voxels must actually coincide).
+- `--distance_threshold` caps the pose-to-pose distance (m) beyond which a DB/Q pair is assumed non-overlapping and skipped, without spending time voxelizing it.
+
+### Validate Calculated Overlaps
+
+Sanity-check a precomputed overlap matrix before trusting it as GT with [`validate_overlap.py`](evaluation/scripts/validate_overlap.py):
+
+```bash
+python3 evaluation/scripts/validate_overlap.py \
+    --dataset_type helipr \
+    --dataset /path/to/HeLiPR \
+    --db_sequence Roundabout01 --q_sequence Roundabout03 \
+    --pair O-Aeva \
+    --overlap_dir overlap_matrices \
+    --voxel_size 0.5 --pose_dist_threshold 10.0 --overlap_threshold 0.2
+```
+
+It re-loads the DB/Q poses and scans (same range-filter → global-frame → voxelize pipeline as [`build_overlap_data.py`](evaluation/scripts/build_overlap_data.py)) and opens a figure with: (a) DB/Q trajectories in 3D with edges drawn between scan pairs above `--overlap_threshold` and within `--pose_dist_threshold`, colored by overlap value; (b) summary statistics (non-zero entries, entries above threshold, max/mean overlap); (c) a histogram of non-zero overlap values; and (d) top-down aligned views of one randomly picked high-overlap and one low-overlap scan pair. Pass `--seed` to fix which example pair is shown.
+
+<p align=center>
+  <img src="figures/overlaps_example.png" alt="Overlap validation figure for Roundabout01 (Ouster) vs Roundabout03 (Aeva)" width="90%"/>
+</p>
+
+### Configuration
+
+Encoder, retrieval, verification, and refinement parameters live in YAML files under [`config/`](config). Start from [`config/default.yaml`](config/default.yaml) and pass it with `--config`.
+
+The `encoder:` block defines the descriptor itself — every point that survives the crop is reduced to a token `((hb·N_r + rb)·N_s + sb)·N_a + ab`, so the four `N_*` values set the descriptor's resolution and its vocabulary size (`N_h · N_r · N_s · N_a`).
+
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `voxel_size` *(top-level)* | Voxel size (m) used to downsample the submap **before** encoding. Only affects the encoder input — GICP does its own downsampling (`gicp.downsampling_resolution`). | 0.5 |
+| `N_h` | Number of height slices between `z_min` and `z_max`. Sets the `hb` token field. | 10 |
+| `z_min` / `z_max` | Height band (m, above the estimated ground plane) kept for encoding; points outside are dropped. Slice thickness is `(z_max − z_min) / N_h`. | 0.0 / 20.0 |
+| `N_r` | Radial bins over `[0, min(r_max, xy_max)]`. Sets the `rb` field. | 20 |
+| `N_a` | Azimuth bins over the full 360°, i.e. 6° per bin at the default. Sets the `ab` field and the shift resolution BEAM searches over for yaw. | 60 |
+| `N_s` | Number of PCA shape classes (linear / planar / scattered mixtures from the local eigenvalue spread). Sets the `sb` field; `N_s: 1` disables shape and collapses the field. | 7 |
+| `r_max` | Max radius (m) for the radial/azimuth binning. Effectively clamped to `xy_max`. | 100.0 |
+| `xy_max` | XY half-extent (m) of the crop and of the BEV height-cell grid — points with \|x\| or \|y\| beyond it are discarded. | 100.0 |
+| `cell_size` | BEV cell size (m) of the per-slice height image used for keypoint extraction. Keep it ≈ `2 × voxel_size` so cells are populated but not oversmoothed. | 1.0 |
+| `window` | Side length (odd) of the non-maximum-suppression window applied to each slice's height image when picking local maxima as keypoints. Larger = fewer, more spread-out keypoints. | 3 |
+
+
+### Running the Evaluation
+
+```bash
+python3 evaluation/evaluate_inlier_helipr.py \
+    --config config/default.yaml \
+    --dataset /path/to/HeLiPR \
+    --db_sequence Roundabout01 --q_sequence Roundabout03 \
+    --pair O-Aeva \
+    --overlap_dir overlap_matrices \
+    --output_dir results/HeLiPR \
+    --overlap_threshold 0.2 --max_pose_dist 10.0
+```
+
+This writes the Recall/PR-AUC metrics (`results_*.json`), the loop-closure candidates (`candidates_*.csv`), per-pair verify poses (`per_pair_verify_*.csv`), the descriptor caches (`cache_inlier/desc_*.npz`), and a trajectory plot (`trajectory_*.png`) to the output folder. For datasets other than HeLiPR, see [Test Your Own Data](#️-test-your-own-data) below.
+
+### Visualization
+
+Replay a `DB←Q` run as an animation of the growing query trajectory, loop closures, matched keypoints, and the MINT/BEAM descriptors — driven entirely by the evaluation artifacts above:
+
+```bash
+python3 evaluation/playback_evaluation.py \
+    --dataset /path/to/HeLiPR \
+    --output_dir results/HeLiPR/dbR01-O-qR03-Aeva_vs0.5_cs1_nh10_nr20_na60_ns7 \
+    --cache_dir cache_inlier
+```
+
+The run's identity (sequences, sensors, GT thresholds, score threshold) is read from the `results_*.json` in `--output_dir` — no need to repeat it on the command line.
+
+Controls: `SPACE` play/pause, `←` / `→` step. Pass `--record out.mp4` to render headlessly.
+
+<p align=center>
+  <img src="figures/helipr.gif" alt="InLiER loop-closure playback" width="90%"/>
+</p>
+
+## 🗃️ Test Your Own Data
+
+InLiER isn't tied to the HeLiPR loader — [`evaluate_inlier_generic.py`](evaluation/evaluate_inlier_generic.py) runs the identical retrieval/evaluation pipeline on any folder-based dataset, via [`utils/Generic_Handler.py`](evaluation/utils/Generic_Handler.py).
+
+### Dataset Layout
+
+Each of your database and query sequences is its own folder:
+
+```text
+<db_path>/ (and <q_path>/, same layout)
+├── scans/
+│   ├── 000000.pcd
+│   ├── 000001.pcd
+│   └── ...
+├── poses_kitti.txt          # preferred: 12 floats per line (row-major 3x4), 1:1 with scans
+├── poses_tum.txt            # alternative: "#timestamp x y z qx qy qz qw"
+└── transform.txt            # optional: 4x4, maps DB world frame → Q world frame
+```
+
+**`transform.txt` — when you need it.** InLiER compares database and query poses directly (to build the overlap GT and to filter candidates by `--max_pose_dist`), so both sequences must live in the *same* world frame. If they already do — e.g. both were mapped in one session, or registered to a shared global frame — no transform is needed. If they were mapped independently, each sequence's poses start at its own arbitrary origin, and the DB/Q pose distances would be meaningless. `transform.txt` is the 4×4 matrix that maps the **DB world frame into the Q world frame**, and it's applied to the DB keyframe poses before any distance or overlap computation.
+
+The evaluation auto-detects `<db_path>/transform.txt` if it exists; pass `--transform <path>` to point elsewhere, or `--no_transform` to force the shared-frame assumption even when the file is present. Use the same choice for both [`build_overlap_data.py`](evaluation/scripts/build_overlap_data.py) and [`evaluate_inlier_generic.py`](evaluation/evaluate_inlier_generic.py) — a mismatch silently produces a wrong GT matrix.
+
+**Pre-accumulated vs. single scans.** `scans/` can hold either. If your `.pcd` files are already accumulated submaps (as with the HeLiPR toolbox output), run with `--n_db 1 --n_q 1` and each file is used as-is. If they're single sensor scans, let the evaluation accumulate them: `--n_db` / `--n_q` set how many consecutive scans form one submap, each window anchored at its first scan (the keyframe) with the rest transformed into that keyframe's pose via `inv(T_i) @ T_k`. `--stride_db` / `--stride_q` set the step between consecutive submaps and default to `n_db` / `n_q`, i.e. non-overlapping submaps; a stride of 1 gives maximally overlapping ones. Either way there must be exactly one pose per `.pcd` file — the loader errors out on a count mismatch.
+
+Sparse single scans (solid-state, or low-resolution spinning units) generally need accumulation for the height-slice keypoints to be stable.
+
+### Overlap Ground Truth
+
+[`build_overlap_data.py`](evaluation/scripts/build_overlap_data.py) also supports custom data — pass `--dataset_type custom --db_path ... --q_path ...` (same `.pcd` + `poses_kitti.txt` layout, plus the DB→Q `--transform`) to compute the pairwise overlap matrix, just as in [Building Overlap Ground Truth](#building-overlap-ground-truth) for HeLiPR.
+
+With pre-accumulated scans, the defaults (`--n_db 1 --n_q 1`) use each `.pcd` as-is:
+
+```bash
+python3 evaluation/scripts/build_overlap_data.py \
+    --dataset_type custom \
+    --db_path /path/to/database \
+    --q_path  /path/to/query \
+    --transform /path/to/transform.txt \
+    --output_dir overlap_matrices \
+    --voxel_size 0.5 --distance_threshold 100
+```
+
+With single scans, accumulate them into submaps — e.g. 10 scans per submap, stepping one scan at a time:
+
+```bash
+python3 evaluation/scripts/build_overlap_data.py \
+    --dataset_type custom \
+    --db_path /path/to/database \
+    --q_path  /path/to/query \
+    --transform /path/to/transform.txt \
+    --output_dir overlap_matrices \
+    --n_db 10 --n_q 10 --stride_db 1 --stride_q 1 \
+    --voxel_size 0.5 --distance_threshold 100
+```
+
+A stride of 1 keeps one submap per scan, so the overlap matrix stays at full resolution (`M_db × M_q` with `M ≈ number of scans`) at the cost of a longer build. Leaving `--stride_*` out defaults it to `n`, giving non-overlapping submaps and a ~10× smaller matrix. `--n_db` / `--n_q` / `--stride_db` / `--stride_q` **must match what you later pass to** [`evaluate_inlier_generic.py`](evaluation/evaluate_inlier_generic.py) — the matrix is indexed by submap, so any difference misaligns the GT against the retrieval results.
+
+### Evaluation
+
+```bash
+python3 evaluation/evaluate_inlier_generic.py \
+    --config config/default.yaml \
+    --db_path /path/to/database \
+    --q_path  /path/to/query \
+    --transform /path/to/transform.txt \
+    --overlap_file /path/to/overlap.txt \
+    --overlap_threshold 0.2 --max_pose_dist 25.0 \
+    --n_db 10 --n_q 10 --stride_db 1 --stride_q 1 \
+    --output_dir results/custom_dataset
+```
+
+`--transform` defaults to `<db_path>/transform.txt` if present, and `--no_transform` disables it when both sequences already share a world frame. Outputs match the HeLiPR driver (`results_*.json`, `candidates_*.csv`, descriptor caches, trajectory plot) under `--output_dir`.
+
+## 🔜 Coming Soon
+
+### C++ Implementation
+
+- ⚡ We are soon planning to release a C++ core with pybind11 bindings for improved encoding, matching and verification processing times.
+
+### ROS2 Support
+
+- 🤖 We are also planning to release ROS2 nodes to support front-end agnostic loop closures, including a GTSAM based back-end optimization.
+
+## 🙏 Acknowledgements
+
+We thank the authors of [**HeLiPR**](https://sites.google.com/view/heliprdataset) and [**HeLiOS**](https://github.com/minwoo0611/HeLiOS) for their open dataset and tooling, which form the base of our benchmarking ( [**HeLiPR-Pointcloud-Toolbox**](https://github.com/minwoo0611/HeLiPR-Pointcloud-Toolbox), [**HeLiPR-Place-Recognition**](https://github.com/minwoo0611/HeLiPR-Place-Recognition)).
+
+We also thank Koide *et al.* ([@koide3](https://github.com/koide3)) for [`small_gicp`](https://github.com/koide3/small_gicp), which is used throughout our evaluation pipeline and the 6-DoF refinement step.
+
+## 📝 Citation
+
+If you find **InLiER** useful in your research, please consider citing:
+
+```bibtex
+@article{stathoulopoulos2026inlier,
+    title={{InLiER: Learning-Free Heterogeneous LiDAR Place Recognition via Intermediate Mixed-Radix Structural Keypoint Tokenization}}, 
+    author={Nikolaos Stathoulopoulos and George Nikolakopoulos},
+    year={2026},
+    eprint={2607.16862},
+    archivePrefix={arXiv},
+    primaryClass={cs.CV},
+    url={https://arxiv.org/abs/2607.16862}, 
+}
+```
+
+## 📬 Contact
+
+For questions, issues, or collaboration inquiries, feel free to reach out to [niksta@ltu.se](mailto:niksta@ltu.se) or open a git issue [here](https://github.com/LTU-RAI/InLiER/issues).

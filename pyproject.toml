@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "inlier"
+version = "1.0.0"
+description = "Intermediate LiDAR Encoding for Robust Heterogeneous Place Recognition"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "Nikolaos Stathoulopoulos", email = "niksta@ltu.se" }]
+license = { text = "MIT" }
+keywords = ["lidar", "place-recognition", "slam", "robotics"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Operating System :: POSIX :: Linux",
+    "Topic :: Scientific/Engineering",
+]
+dependencies = [
+    "numpy>=1.23",
+    "small_gicp",
+]
+
+[project.optional-dependencies]
+# Everything under evaluation/: overlap-GT building (scripts/), the HeLiPR
+# evaluation entry point, and the playback visualization.
+eval = ["pyyaml", "scipy", "open3d", "tqdm", "matplotlib", "pandas"]
+
+[project.urls]
+Homepage = "https://github.com/LTU-RAI/InLiER"
+
+# `inlier` is the pure-Python core: the encoder (inlier.core.InLiER) and the
+# matcher (inlier.core.InLiER_Matcher). The C++ core and ROS node will be added
+# later as top-level `cpp/` and `ros/` siblings. `evaluation/` and `config/` are
+# dev tooling; the dataset I/O layer lives in `evaluation/utils/` because only
+# the evaluation scripts use it — the core never imports it.
+[tool.setuptools.packages.find]
+include = ["inlier*"]

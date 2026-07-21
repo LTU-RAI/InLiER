@@ -1,0 +1,159 @@
+{
+  "config": {
+    "db_sequence": "Roundabout01",
+    "db_sensor": "Ouster",
+    "q_sequence": "Roundabout03",
+    "q_sensor": "Aeva",
+    "overlap_threshold": 0.2,
+    "max_pose_dist": 10.0,
+    "voxel_size": 0.5,
+    "inlier": {
+      "cell_size": 1.0,
+      "N_h": 10,
+      "z_min": 0.0,
+      "z_max": 20.0,
+      "N_r": 20,
+      "N_s": 7,
+      "N_a": 60,
+      "point_mode": "keypoints"
+    },
+    "shortlist": {
+      "topk": 100,
+      "topk_pct": 0.1,
+      "effective_topk": 270,
+      "min_shared_rows": 3,
+      "mint_mode": "compact",
+      "mint_scoring": "l1_intersection"
+    },
+    "beam": {
+      "topk": 20,
+      "topk_pct": null,
+      "min_shared_bins": 4,
+      "min_shared_az_cols": 3,
+      "score_threshold": 0.0
+    },
+    "rerank": null
+  },
+  "dataset_info": {
+    "n_db_scans": 2705,
+    "n_q_scans": 2774,
+    "n_queries_with_gt": 2378
+  },
+  "timing": {
+    "encoding_s": 0.49,
+    "stage1_retrieval_s": 12.28,
+    "stage2_reranking_s": 244.69,
+    "combined_reranking_s": 0.0,
+    "ms_per_query_s1": 4.43,
+    "ms_per_query_s2": 88.21,
+    "ms_per_query_comb": 0.0,
+    "verify_s": 360.47,
+    "ms_per_query_ver": 129.95,
+    "gicp_s": 108.48
+  },
+  "stage1": {
+    "recall_at_n": {
+      "1": 0.094197,
+      "5": 0.202691,
+      "10": 0.285114,
+      "20": 0.374264,
+      "50": 0.528175,
+      "100": 0.650126
+    },
+    "recall_at_kpct": {
+      "1pct": 0.430193,
+      "5pct": 0.702271,
+      "10pct": 0.80614
+    },
+    "pr_auc": 0.090282
+  },
+  "stage2": {
+    "recall_at_n": {
+      "1": 0.529857,
+      "5": 0.639613,
+      "10": 0.680404,
+      "20": 0.714466,
+      "50": 0.753154,
+      "100": 0.780067
+    },
+    "recall_at_kpct": {
+      "1pct": 0.729605,
+      "5pct": 0.791842,
+      "10pct": 0.80614
+    },
+    "pr_auc": 0.732716
+  },
+  "combined": null,
+  "verify": {
+    "recall_at_n": {
+      "1": 0.648024,
+      "5": 0.681665,
+      "10": 0.698907,
+      "20": 0.714466,
+      "50": 0.753154,
+      "100": 0.780067
+    },
+    "recall_at_kpct": {
+      "1pct": 0.729605,
+      "5pct": 0.791842,
+      "10pct": 0.805719
+    },
+    "pr_auc": 0.882076,
+    "config": {
+      "top_v": 20,
+      "ransac_iters": 500,
+      "inlier_dist_thresh": 1.0,
+      "min_correspondences": 32,
+      "min_ransac_inliers": 16,
+      "min_keypoint_inliers": 8,
+      "spatial_tol": 0
+    }
+  },
+  "confusion": {
+    "stage": "Verify",
+    "threshold": 0.3,
+    "TP": 1350,
+    "FP": 16,
+    "FN": 1022,
+    "TN": 386,
+    "precision": 0.9883,
+    "recall": 0.5691,
+    "tp_match_distance": {
+      "mean_m": 2.385,
+      "std_m": 1.819,
+      "min_m": 0.055,
+      "max_m": 9.992,
+      "median_m": 1.869
+    },
+    "tp_pose_error_verify": {
+      "n_pairs": 1350,
+      "translation_mean_m": 1.049,
+      "translation_median_m": 0.952,
+      "translation_std_m": 0.637,
+      "rotation_mean_deg": 3.124,
+      "rotation_median_deg": 2.913,
+      "rotation_std_deg": 1.717
+    },
+    "tp_pose_error_gicp": {
+      "n_pairs": 1343,
+      "translation_mean_m": 0.301,
+      "translation_median_m": 0.264,
+      "translation_std_m": 0.307,
+      "rotation_mean_deg": 0.283,
+      "rotation_median_deg": 0.226,
+      "rotation_std_deg": 0.183
+    }
+  },
+  "gicp": {
+    "config": {
+      "registration_type": "GICP",
+      "max_correspondence_distance": 1.5,
+      "downsampling_resolution": 0.2,
+      "max_iterations": 16,
+      "use_raw_clouds": true
+    },
+    "n_tp_pairs": 1350,
+    "n_converged": 1343,
+    "timing_s": 108.48
+  }
+}
