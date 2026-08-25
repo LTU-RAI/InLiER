@@ -4,7 +4,7 @@
 ## Learning-Free Heterogeneous LiDAR Place Recognition via Intermediate Mixed-Radix Structural Keypoint Tokenization
 
 [![arXiv](https://img.shields.io/badge/Arxiv-2607.16862-b31b1b.svg?logo=arXiv)](https://arxiv.org/abs/2607.16862)
-[![DOI:10.XXXX/LRA.2026.XXXXXXX](https://img.shields.io/badge/IEEE-10.XXXX/LRA.2026.XXXXXXX-00629B.svg)](https://doi.org/10.XXXX/LRA.2026.XXXXXXX)
+[![DOI:10.1109/LRA.2026.3723737](https://img.shields.io/badge/IEEE-10.1109/LRA.2026.3723737-00629B.svg)](https://doi.org/10.1109/LRA.2026.3723737)
   <a href="https://www.youtube.com/"><img src="https://badges.aleen42.com/src/youtube.svg" alt="YouTube" /></a>
 
 ![Python](https://img.shields.io/badge/Python-3670A0?logo=python&logoColor=ffdd54)
@@ -289,13 +289,14 @@ If you find **InLiER** useful in your research, please consider citing:
 
 ```bibtex
 @article{stathoulopoulos2026inlier,
-    title={{InLiER: Learning-Free Heterogeneous LiDAR Place Recognition via Intermediate Mixed-Radix Structural Keypoint Tokenization}}, 
-    author={Nikolaos Stathoulopoulos and George Nikolakopoulos},
-    year={2026},
-    eprint={2607.16862},
-    archivePrefix={arXiv},
-    primaryClass={cs.CV},
-    url={https://arxiv.org/abs/2607.16862}, 
+  author={Stathoulopoulos, Nikolaos and Nikolakopoulos, George},
+  journal={IEEE Robotics and Automation Letters}, 
+  title={{InLiER:  Learning-Free Heterogeneous LiDAR Place Recognition via Intermediate Mixed-Radix Structural Keypoint Tokenization}}, 
+  year={2026},
+  volume={11},
+  number={10},
+  pages={11275-11282},
+  doi={10.1109/LRA.2026.3723737}}
 }
 ```
 
