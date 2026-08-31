@@ -7,7 +7,7 @@
 [![DOI:10.1109/LRA.2026.3723737](https://img.shields.io/badge/IEEE-10.1109/LRA.2026.3723737-00629B.svg)](https://doi.org/10.1109/LRA.2026.3723737)
   <a href="https://www.youtube.com/watch?v=f73wsWx8vxg/"><img src="https://badges.aleen42.com/src/youtube.svg" alt="YouTube" /></a>
 
-![Python](https://img.shields.io/badge/Python-3670A0?logo=python&logoColor=ffdd54)
+![Python](https://img.shields.io/badge/Python-00599C?logo=python&logoColor=ffdd54)
 ![C++](https://img.shields.io/badge/C++-00599C?logo=cplusplus&logoColor=white)
 [![MIT License](https://img.shields.io/badge/License-MIT-green.svg)](https://choosealicense.com/licenses/mit/)
 ![Linux](https://img.shields.io/badge/Linux-FCC624?logo=linux&logoColor=black)

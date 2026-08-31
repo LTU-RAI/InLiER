@@ -14,6 +14,7 @@
 #include "inlier_core/config.hpp"
 #include "inlier_core/encoder.hpp"
 #include "inlier_core/plane.hpp"
+#include "inlier_core/shape_pca.hpp"
 #include "inlier_core/token.hpp"
 #include "inlier_core/types.hpp"
 
@@ -345,4 +346,40 @@ PYBIND11_MODULE(_inlier_pybind, m) {
            py::arg("kp_p"), py::arg("T_ground"),
            py::arg("plane") = std::nullopt, py::arg("mode") = "config",
            "-> token_id (K,) u32|u64");
+
+  // --- shape PCA ---
+  m.def(
+      "compute_shape_pca",
+      [](const Arr<double> &points, const Arr<double> &centers, double radius,
+         int min_neighbors, int n_classes) {
+        auto as_pts = [](const Arr<double> &a) {
+          if (a.ndim() != 2 || a.shape(1) != 3) {
+            throw py::value_error("array must have shape (N, 3)");
+          }
+          Eigen::Matrix<double, Eigen::Dynamic, 3> out(a.shape(0), 3);
+          const auto *p = a.data();
+          for (py::ssize_t i = 0; i < a.shape(0); ++i) {
+            out(i, 0) = p[3 * i];
+            out(i, 1) = p[3 * i + 1];
+            out(i, 2) = p[3 * i + 2];
+          }
+          return out;
+        };
+        const auto pts = as_pts(points);
+        const auto ctr = as_pts(centers);
+        inlier::ShapePcaResult r;
+        {
+          py::gil_scoped_release release;
+          r = inlier::ComputeShapePca(pts, ctr, radius, min_neighbors,
+                                      n_classes);
+        }
+        py::array_t<int16_t> cls(
+            static_cast<py::ssize_t>(r.shape_class.size()));
+        std::copy(r.shape_class.begin(), r.shape_class.end(),
+                  cls.mutable_data());
+        return py::make_tuple(cls, Eigen::MatrixXf(r.lps));
+      },
+      py::arg("points"), py::arg("centers"), py::arg("radius"),
+      py::arg("min_neighbors"), py::arg("n_classes"),
+      "-> (shape_class (K,) int16, lps (K,3) float32)");
 }

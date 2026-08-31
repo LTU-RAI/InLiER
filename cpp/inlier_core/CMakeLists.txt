@@ -1,6 +1,6 @@
 # inlier_core — pure C++ static library (no Python includes).
 include(${CMAKE_CURRENT_LIST_DIR}/cmake/eigen.cmake)
-# include(${CMAKE_CURRENT_LIST_DIR}/cmake/nanoflann.cmake)
+include(${CMAKE_CURRENT_LIST_DIR}/cmake/nanoflann.cmake)
 
 add_library(inlier_core STATIC
   src/plane.cpp
@@ -12,7 +12,7 @@ add_library(inlier_core STATIC
 target_include_directories(inlier_core PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
 
-target_link_libraries(inlier_core PUBLIC Eigen3::Eigen)
+target_link_libraries(inlier_core PUBLIC Eigen3::Eigen nanoflann::nanoflann)
 
 target_compile_options(inlier_core PRIVATE
   $<$<CXX_COMPILER_ID:GNU,Clang>:-O3 -Wall -Wextra>)
