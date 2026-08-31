@@ -39,7 +39,7 @@ The pipeline re-organizes one token vocabulary across three stages:
 - [🚀 Setup](#-setup) — [Prerequisites](#prerequisites) • [Installation](#installation) • [Environment Setup](#environment-setup)
 - [🕹️ Run the Example](#️-run-the-example) — [Dataset Setup](#dataset-setup) • [Building Overlap GT](#building-overlap-ground-truth) • [Validating Overlaps](#validate-calculated-overlaps) • [Configuration](#configuration) • [Evaluation](#running-the-evaluation) • [Visualization](#visualization)
 - [🗃️ Test Your Own Data](#️-test-your-own-data) — [Dataset Layout](#dataset-layout) • [Overlap Ground Truth](#overlap-ground-truth) • [Evaluation](#evaluation)
-- [🔜 Coming Soon](#-coming-soon) — [C++ Implementation](#c-implementation) • [ROS2 Support](#ros2-support)
+- [🔜 Coming Soon](#-coming-soon) — [C++ Implementation](#c-implementation) • [CLI Support](#cli-support) • [ROS2 Support](#ros2-support)
 - [🙏 Acknowledgements](#-acknowledgements)
 - [📝 Citation](#-citation)
 - [📬 Contact](#-contact)
@@ -273,6 +273,10 @@ python3 evaluation/evaluate_inlier_generic.py \
 
 - ⚡ We are soon planning to release a C++ core with pybind11 bindings for improved encoding, matching and verification processing times.
 
+### CLI Support
+
+- 🖥️ We are planning to add a CLI entry point (`inlier --help`) to run the encoder, matcher, and evaluation scripts directly.
+
 ### ROS2 Support
 
 - 🤖 We are also planning to release ROS2 nodes to support front-end agnostic loop closures, including a GTSAM based back-end optimization.
@@ -291,7 +295,7 @@ If you find **InLiER** useful in your research, please consider citing:
 @article{stathoulopoulos2026inlier,
   author={Stathoulopoulos, Nikolaos and Nikolakopoulos, George},
   journal={IEEE Robotics and Automation Letters}, 
-  title={{InLiER:  Learning-Free Heterogeneous LiDAR Place Recognition via Intermediate Mixed-Radix Structural Keypoint Tokenization}}, 
+  title={{InLiER: Learning-Free Heterogeneous LiDAR Place Recognition via Intermediate Mixed-Radix Structural Keypoint Tokenization}}, 
   year={2026},
   volume={11},
   number={10},
