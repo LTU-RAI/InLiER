@@ -2,12 +2,15 @@
 //
 // The public API lives in the Python wrappers (inlier/core/InLiER.py,
 // inlier/core/InLiER_Matcher.py); this module only exposes the raw C++ core.
+#include <pybind11/eigen.h>
 #include <pybind11/numpy.h>
 #include <pybind11/pybind11.h>
 
 #include <cstdint>
 
+#include "inlier_core/plane.hpp"
 #include "inlier_core/token.hpp"
+#include "inlier_core/types.hpp"
 
 #define STRINGIFY(x) #x
 #define MACRO_STRINGIFY(x) STRINGIFY(x)
@@ -158,7 +161,7 @@ PYBIND11_MODULE(_inlier_pybind, m) {
   m.attr("__version__") = "dev";
 #endif
 
-  // ---- M1: token codec ----
+  // --- token codec ---
   m.def("pack_token_ids", &PackTokenIds, py::arg("hb"), py::arg("rb"),
         py::arg("sb"), py::arg("ab"), py::arg("N_h"), py::arg("N_r"),
         py::arg("N_s"), py::arg("N_a"),
@@ -176,4 +179,36 @@ PYBIND11_MODULE(_inlier_pybind, m) {
   m.def("rerank_key", &RerankKeyArr, py::arg("sb"), py::arg("hb"),
         py::arg("rb"), py::arg("ab"), py::arg("N_h"), py::arg("N_r"),
         py::arg("N_a"));
+
+  // --- plane geometry ---
+  py::class_<inlier::Plane>(m, "Plane")
+      .def(py::init<>())
+      .def_readwrite("normal", &inlier::Plane::normal)
+      .def_readwrite("d", &inlier::Plane::d)
+      .def_readwrite("point", &inlier::Plane::point)
+      .def_readwrite("inliers", &inlier::Plane::inliers);
+
+  m.def(
+      "ransac_plane",
+      [](const Arr<double> &points, int iters, double dist_thresh,
+         int min_inliers) {
+        if (points.ndim() != 2 || points.shape(1) != 3) {
+          throw py::value_error("points must have shape (N, 3)");
+        }
+        Eigen::Matrix<double, Eigen::Dynamic, 3> pts(points.shape(0), 3);
+        const auto *p = points.data();
+        for (py::ssize_t i = 0; i < points.shape(0); ++i) {
+          pts(i, 0) = p[3 * i];
+          pts(i, 1) = p[3 * i + 1];
+          pts(i, 2) = p[3 * i + 2];
+        }
+        py::gil_scoped_release release;
+        return inlier::RansacPlane(pts, iters, dist_thresh, min_inliers);
+      },
+      py::arg("points"), py::arg("iters"), py::arg("dist_thresh"),
+      py::arg("min_inliers"));
+  m.def("align_ground", &inlier::AlignGround, py::arg("plane_normal"),
+        py::arg("plane_point"),
+        "T_ground (4x4) rotating plane_normal -> +Z with ground at z=0.");
+  m.def("rodrigues", &inlier::Rodrigues, py::arg("axis"), py::arg("angle"));
 }

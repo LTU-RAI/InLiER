@@ -34,10 +34,12 @@ if(NOT pybind11_FOUND)
   FetchContent_MakeAvailable(pybind11)
 endif()
 
+# --- C++ core library (no Python dependencies) ---
+add_subdirectory(cpp/inlier_core)
 
-# --- Private binding module, installed inside the `inlier_legacy` package ---
+# --- Private binding module, installed inside the `inlier` package ---
 pybind11_add_module(_inlier_pybind python/pybind/inlier_pybind.cpp)
-target_include_directories(_inlier_pybind PRIVATE cpp/inlier_core/include)
+target_link_libraries(_inlier_pybind PRIVATE inlier_core)
 target_compile_definitions(_inlier_pybind
                            PRIVATE VERSION_INFO=${PROJECT_VERSION})
 
