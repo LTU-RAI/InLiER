@@ -28,6 +28,7 @@ dependencies = [
 # Everything under evaluation/: overlap-GT building (scripts/), the HeLiPR
 # evaluation entry point, and the playback visualization.
 eval = ["pyyaml", "scipy", "open3d", "tqdm", "matplotlib", "pandas"]
+test = ["pytest"]
 
 [project.urls]
 Homepage = "https://github.com/LTU-RAI/InLiER"

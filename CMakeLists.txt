@@ -37,6 +37,7 @@ endif()
 
 # --- Private binding module, installed inside the `inlier_legacy` package ---
 pybind11_add_module(_inlier_pybind python/pybind/inlier_pybind.cpp)
+target_include_directories(_inlier_pybind PRIVATE cpp/inlier_core/include)
 target_compile_definitions(_inlier_pybind
                            PRIVATE VERSION_INFO=${PROJECT_VERSION})
 
