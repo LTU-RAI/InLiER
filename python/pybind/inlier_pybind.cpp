@@ -18,6 +18,7 @@
 #include "inlier_core/shape_pca.hpp"
 #include "inlier_core/token.hpp"
 #include "inlier_core/types.hpp"
+#include "inlier_core/verify.hpp"
 
 #define STRINGIFY(x) #x
 #define MACRO_STRINGIFY(x) STRINGIFY(x)
@@ -538,4 +539,81 @@ PYBIND11_MODULE(_inlier_pybind, m) {
            py::arg("candidate_ids"), py::arg("candidate_shifts"),
            py::arg("config"), py::arg("topk") = -1,
            py::arg("topk_pct") = -1.0);
+
+  // --- verify: token-guided RANSAC geometric verification ---
+  py::class_<inlier::VerifyConfig>(m, "VerifyConfig")
+      .def(py::init<>())
+      .def_readwrite("topk", &inlier::VerifyConfig::topk)
+      .def_readwrite("topk_pct", &inlier::VerifyConfig::topk_pct)
+      .def_readwrite("ransac_iters", &inlier::VerifyConfig::ransac_iters)
+      .def_readwrite("inlier_dist_thresh",
+                     &inlier::VerifyConfig::inlier_dist_thresh)
+      .def_readwrite("min_correspondences",
+                     &inlier::VerifyConfig::min_correspondences)
+      .def_readwrite("min_ransac_inliers",
+                     &inlier::VerifyConfig::min_ransac_inliers)
+      .def_readwrite("min_keypoint_inliers",
+                     &inlier::VerifyConfig::min_keypoint_inliers)
+      .def_readwrite("spatial_tol", &inlier::VerifyConfig::spatial_tol)
+      .def_readwrite("seed", &inlier::VerifyConfig::seed);
+
+  py::class_<inlier::VerifyResult>(m, "VerifyResult")
+      .def_readonly("fail_stage", &inlier::VerifyResult::fail_stage)
+      .def_readonly("ransac_inliers_found",
+                    &inlier::VerifyResult::ransac_inliers_found)
+      .def_readonly("success", &inlier::VerifyResult::success)
+      .def_readonly("T_sensor", &inlier::VerifyResult::T_sensor)
+      .def_readonly("yaw", &inlier::VerifyResult::yaw)
+      .def_readonly("tx", &inlier::VerifyResult::tx)
+      .def_readonly("ty", &inlier::VerifyResult::ty)
+      .def_readonly("tz", &inlier::VerifyResult::tz)
+      .def_readonly("n_correspondences",
+                    &inlier::VerifyResult::n_correspondences)
+      .def_readonly("n_ransac_inliers",
+                    &inlier::VerifyResult::n_ransac_inliers)
+      .def_readonly("n_keypoint_inliers",
+                    &inlier::VerifyResult::n_keypoint_inliers)
+      .def_readonly("n_total_keypoints",
+                    &inlier::VerifyResult::n_total_keypoints)
+      .def_readonly("ransac_inlier_ratio",
+                    &inlier::VerifyResult::ransac_inlier_ratio)
+      .def_readonly("keypoint_inlier_ratio",
+                    &inlier::VerifyResult::keypoint_inlier_ratio)
+      .def_readonly("inlier_rmse", &inlier::VerifyResult::inlier_rmse);
+
+  m.def(
+      "verify",
+      [](const Arr<uint64_t> &q_tid, const Arr<double> &q_p,
+         const Eigen::Matrix4d &q_T_ground, const Arr<uint64_t> &db_tid,
+         const Arr<double> &db_p, const Eigen::Matrix4d &db_T_ground,
+         int azimuth_shift, const inlier::InLiERConfig &grid,
+         const inlier::VerifyConfig &cfg) {
+        auto as_pts = [](const Arr<double> &a) {
+          if (a.ndim() != 2 || a.shape(1) != 3) {
+            throw py::value_error("keypoints must have shape (K, 3)");
+          }
+          Eigen::Matrix<double, Eigen::Dynamic, 3> out(a.shape(0), 3);
+          const auto *p = a.data();
+          for (py::ssize_t i = 0; i < a.shape(0); ++i) {
+            out(i, 0) = p[3 * i];
+            out(i, 1) = p[3 * i + 1];
+            out(i, 2) = p[3 * i + 2];
+          }
+          return out;
+        };
+        inlier::Keypoints q_kp, db_kp;
+        q_kp.p = as_pts(q_p);
+        q_kp.T_ground = q_T_ground;
+        db_kp.p = as_pts(db_p);
+        db_kp.T_ground = db_T_ground;
+        const auto q = TokenArrayToVector(q_tid);
+        const auto db = TokenArrayToVector(db_tid);
+        py::gil_scoped_release release;
+        return inlier::Verify(q, q_kp, db, db_kp, azimuth_shift, grid, cfg);
+      },
+      py::arg("query_token_id"), py::arg("query_p"),
+      py::arg("query_T_ground"), py::arg("db_token_id"), py::arg("db_p"),
+      py::arg("db_T_ground"), py::arg("azimuth_shift"), py::arg("grid"),
+      py::arg("config"),
+      "Token-guided RANSAC verification -> VerifyResult");
 }

@@ -6,8 +6,8 @@ add_library(inlier_core STATIC
   src/plane.cpp
   src/encoder.cpp
   src/shape_pca.cpp
-  src/matcher.cpp)
-#   src/verify.cpp
+  src/matcher.cpp
+  src/verify.cpp)
 
 target_include_directories(inlier_core PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
