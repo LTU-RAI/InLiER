@@ -29,7 +29,7 @@ struct InLiERConfig {
   // Ground-plane RANSAC
   int ransac_iters = 250;
   double ransac_dist_thresh = 1.0;
-  int ransac_min_inliers = 100;
+  int ransac_min_inliers = 200;
 
   // "keypoints" | "all_points"
   std::string point_mode = "keypoints";

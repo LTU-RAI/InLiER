@@ -58,4 +58,11 @@ def plane_cpp_to_dict(plane: "_ip.Plane") -> dict:
         "d": np.array([plane.d], dtype=np.float64),
         "point": np.asarray(plane.point, dtype=np.float64),
         "inliers": np.asarray(plane.inliers, dtype=bool),
-    }   
+    }
+
+
+def token_dtype(cfg: InLiER_Config):
+    """The public token_id dtype rule (uint32 unless product > 2^32-1)."""
+    product = (int(cfg.N_h) * int(cfg.N_r) * int(max(1, cfg.N_s))
+               * int(max(1, cfg.N_a)))
+    return np.uint64 if product > np.iinfo(np.uint32).max else np.uint32
