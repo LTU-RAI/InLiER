@@ -5,9 +5,14 @@
 #include <pybind11/eigen.h>
 #include <pybind11/numpy.h>
 #include <pybind11/pybind11.h>
+#include <pybind11/stl.h>
 
 #include <cstdint>
+#include <optional>
+#include <string>
 
+#include "inlier_core/config.hpp"
+#include "inlier_core/encoder.hpp"
 #include "inlier_core/plane.hpp"
 #include "inlier_core/token.hpp"
 #include "inlier_core/types.hpp"
@@ -150,6 +155,100 @@ py::array_t<int64_t> RerankKeyArr(const Arr<int64_t> &sb,
   return out;
 }
 
+/// Tokens -> numpy array with the public dtype contract: uint32 unless
+/// the mixed-radix product N_h*N_r*N_s*N_a exceeds 2^32-1.
+py::array TokensToArray(const inlier::Tokens &tokens,
+                        const inlier::InLiERConfig &cfg) {
+  const uint64_t product = static_cast<uint64_t>(cfg.N_h) * cfg.N_r *
+                           std::max(1, cfg.N_s) * std::max(1, cfg.N_a);
+  const auto n = static_cast<py::ssize_t>(tokens.token_id.size());
+  if (product > UINT64_C(0xFFFFFFFF)) {
+    py::array_t<uint64_t> out(n);
+    std::copy(tokens.token_id.begin(), tokens.token_id.end(),
+              out.mutable_data());
+    return out;
+  }
+  py::array_t<uint32_t> out(n);
+  auto *o = out.mutable_data();
+  for (py::ssize_t i = 0; i < n; ++i) {
+    o[i] = static_cast<uint32_t>(tokens.token_id[static_cast<size_t>(i)]);
+  }
+  return out;
+}
+
+inlier::TokenizeMode ParseTokenizeMode(const std::string &mode) {
+  if (mode == "config") return inlier::TokenizeMode::kFromConfig;
+  if (mode == "keypoints") return inlier::TokenizeMode::kKeypoints;
+  if (mode == "all_points") return inlier::TokenizeMode::kAllPoints;
+  throw py::value_error("mode must be 'config' | 'keypoints' | 'all_points'");
+}
+
+/// Thin binding wrapper: numpy (N,3) in, plain arrays out. The Python
+/// wrapper layer (inlier/core/InLiER.py) rebuilds the dataclasses.
+class PyEncoder {
+ public:
+  explicit PyEncoder(const inlier::InLiERConfig &cfg) : enc_(cfg) {}
+
+  py::tuple Encode(const Arr<double> &points,
+                   const std::optional<inlier::Plane> &plane) const {
+    const auto pts = AsPoints(points);
+    std::pair<inlier::Keypoints, inlier::Tokens> result;
+    {
+      py::gil_scoped_release release;
+      result = enc_.Encode(pts, plane);
+    }
+    return py::make_tuple(result.first.p, result.first.T_ground,
+                          TokensToArray(result.second, enc_.config()));
+  }
+
+  py::tuple ExtractKeypoints(const Arr<double> &points,
+                             const std::optional<inlier::Plane> &plane) const {
+    const auto pts = AsPoints(points);
+    inlier::Keypoints kp;
+    {
+      py::gil_scoped_release release;
+      kp = enc_.ExtractKeypoints(pts, plane);
+    }
+    return py::make_tuple(kp.p, kp.T_ground);
+  }
+
+  py::array Tokenize(const Arr<double> &points, const Arr<double> &kp_p,
+                     const Eigen::Matrix4d &T_ground,
+                     const std::optional<inlier::Plane> &plane,
+                     const std::string &mode) const {
+    const auto pts = AsPoints(points);
+    inlier::Keypoints kp;
+    kp.p = AsPoints(kp_p);
+    kp.T_ground = T_ground;
+    const auto m = ParseTokenizeMode(mode);
+    inlier::Tokens tokens;
+    {
+      py::gil_scoped_release release;
+      tokens = enc_.Tokenize(pts, kp, plane, m);
+    }
+    return TokensToArray(tokens, enc_.config());
+  }
+
+ private:
+  static Eigen::Matrix<double, Eigen::Dynamic, 3> AsPoints(
+      const Arr<double> &points) {
+    if (points.ndim() != 2 || points.shape(1) != 3) {
+      throw py::value_error("points_xyz must have shape (N, 3)");
+    }
+    const auto n = points.shape(0);
+    Eigen::Matrix<double, Eigen::Dynamic, 3> out(n, 3);
+    const auto *p = points.data();
+    for (py::ssize_t i = 0; i < n; ++i) {
+      out(i, 0) = p[3 * i];
+      out(i, 1) = p[3 * i + 1];
+      out(i, 2) = p[3 * i + 2];
+    }
+    return out;
+  }
+
+  inlier::Encoder enc_;
+};
+
 }  // namespace
 
 PYBIND11_MODULE(_inlier_pybind, m) {
@@ -211,4 +310,39 @@ PYBIND11_MODULE(_inlier_pybind, m) {
         py::arg("plane_point"),
         "T_ground (4x4) rotating plane_normal -> +Z with ground at z=0.");
   m.def("rodrigues", &inlier::Rodrigues, py::arg("axis"), py::arg("angle"));
+
+  // --- config + encoder ---
+  py::class_<inlier::InLiERConfig>(m, "InLiERConfig")
+      .def(py::init<>())
+      .def_readwrite("N_h", &inlier::InLiERConfig::N_h)
+      .def_readwrite("z_min", &inlier::InLiERConfig::z_min)
+      .def_readwrite("z_max", &inlier::InLiERConfig::z_max)
+      .def_readwrite("r_max", &inlier::InLiERConfig::r_max)
+      .def_readwrite("N_r", &inlier::InLiERConfig::N_r)
+      .def_readwrite("N_a", &inlier::InLiERConfig::N_a)
+      .def_readwrite("N_s", &inlier::InLiERConfig::N_s)
+      .def_readwrite("cell_size", &inlier::InLiERConfig::cell_size)
+      .def_readwrite("xy_max", &inlier::InLiERConfig::xy_max)
+      .def_readwrite("window", &inlier::InLiERConfig::window)
+      .def_readwrite("max_kp_per_slice", &inlier::InLiERConfig::max_kp_per_slice)
+      .def_readwrite("max_kp_total", &inlier::InLiERConfig::max_kp_total)
+      .def_readwrite("ransac_iters", &inlier::InLiERConfig::ransac_iters)
+      .def_readwrite("ransac_dist_thresh", &inlier::InLiERConfig::ransac_dist_thresh)
+      .def_readwrite("ransac_min_inliers", &inlier::InLiERConfig::ransac_min_inliers)
+      .def_readwrite("point_mode", &inlier::InLiERConfig::point_mode)
+      .def_readwrite("shape_radius", &inlier::InLiERConfig::shape_radius)
+      .def_readwrite("shape_min_neighbors", &inlier::InLiERConfig::shape_min_neighbors);
+
+  py::class_<PyEncoder>(m, "_Encoder")
+      .def(py::init<const inlier::InLiERConfig &>(), py::arg("config"))
+      .def("encode", &PyEncoder::Encode, py::arg("points"),
+           py::arg("plane") = std::nullopt,
+           "-> (p (K,3) f64, T_ground (4,4) f64, token_id (K,) u32|u64)")
+      .def("extract_keypoints", &PyEncoder::ExtractKeypoints,
+           py::arg("points"), py::arg("plane") = std::nullopt,
+           "-> (p (K,3) f64, T_ground (4,4) f64)")
+      .def("tokenize", &PyEncoder::Tokenize, py::arg("points"),
+           py::arg("kp_p"), py::arg("T_ground"),
+           py::arg("plane") = std::nullopt, py::arg("mode") = "config",
+           "-> token_id (K,) u32|u64");
 }
