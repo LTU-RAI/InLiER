@@ -10,7 +10,7 @@ _LOGO = r"""
 _WIDTH = 50
 
 
-def print_banner(version: str = "1.0.0"):
+def print_banner(version: str = "0.1.0"):
     print(_LOGO.rstrip("\n"))
     print()
     print(" Intermediate LiDAR Encoding for Retrieval")

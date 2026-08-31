@@ -35,7 +35,7 @@ class InLiER:
     """InLiER encoder: keypoint extraction + token_id assignment."""
 
     def __init__(self, config: InLiER_Config = InLiER_Config()) -> None:
-        print_banner(version="1.0.0")
+        print_banner(version="0.1.0")
         self._config = config
         print_config_banner(config)
 
