@@ -7,6 +7,8 @@ conversion is a mechanical field copy.
 
 from __future__ import annotations
 
+from dataclasses import fields
+
 import numpy as np
 
 from inlier import _inlier_pybind as _ip
@@ -26,6 +28,18 @@ def to_cpp_inlier_config(cfg: InLiER_Config) -> "_ip.InLiERConfig":
         setattr(out, name, getattr(cfg, name))
     out.max_kp_total = int(cfg.max_kp_total)
     return out
+
+def to_cpp_stage_config(cpp_cls, dataclass_cfg):
+    """Copy a stage config dataclass (Shortlist/BEAMScore/Rerank/Verify)
+    into its C++ mirror class."""
+    out = cpp_cls()
+    for f in fields(dataclass_cfg):
+        value = getattr(dataclass_cfg, f.name)
+        if f.name == "topk_pct":
+            value = -1.0 if value is None else float(value)
+        setattr(out, f.name, value)
+    return out
+
 
 def plane_dict_to_cpp(plane: dict) -> "_ip.Plane":
       """Plane dict (normal/d/point/inliers) -> C++ Plane."""

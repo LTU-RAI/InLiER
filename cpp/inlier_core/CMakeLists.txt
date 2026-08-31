@@ -5,8 +5,8 @@ include(${CMAKE_CURRENT_LIST_DIR}/cmake/nanoflann.cmake)
 add_library(inlier_core STATIC
   src/plane.cpp
   src/encoder.cpp
-  src/shape_pca.cpp)
-#   src/matcher.cpp
+  src/shape_pca.cpp
+  src/matcher.cpp)
 #   src/verify.cpp
 
 target_include_directories(inlier_core PUBLIC

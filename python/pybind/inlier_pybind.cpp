@@ -13,6 +13,7 @@
 
 #include "inlier_core/config.hpp"
 #include "inlier_core/encoder.hpp"
+#include "inlier_core/matcher.hpp"
 #include "inlier_core/plane.hpp"
 #include "inlier_core/shape_pca.hpp"
 #include "inlier_core/token.hpp"
@@ -250,6 +251,86 @@ class PyEncoder {
   inlier::Encoder enc_;
 };
 
+std::vector<uint64_t> TokenArrayToVector(const Arr<uint64_t> &token_id) {
+  return {token_id.data(), token_id.data() + token_id.size()};
+}
+
+/// Thin matcher wrapper: numpy arrays in, result structs out. The
+/// Python wrapper layer (inlier/core/InLiER_Matcher.py) rebuilds the
+/// output dataclasses.
+class PyMatcher {
+ public:
+  explicit PyMatcher(const inlier::InLiERConfig &cfg) : m_(cfg) {}
+
+  void Add(int64_t database_id, const Arr<uint64_t> &token_id) {
+    m_.Add(database_id, TokenArrayToVector(token_id));
+  }
+  void Reset() { m_.Reset(); }
+  void Finalize() {
+    py::gil_scoped_release release;
+    m_.Finalize();
+  }
+  size_t Size() const { return m_.size(); }
+  bool Finalized() const { return m_.finalized(); }
+
+  py::array_t<int64_t> DbIds() const {
+    const auto &ids = m_.db_ids();
+    py::array_t<int64_t> out(static_cast<py::ssize_t>(ids.size()));
+    std::copy(ids.begin(), ids.end(), out.mutable_data());
+    return out;
+  }
+
+  py::tuple GetScanData(int64_t database_id) const {
+    const inlier::ScanData s = m_.GetScanData(database_id);
+    auto vec_i16 = [](const std::vector<int16_t> &v) {
+      py::array_t<int16_t> a(static_cast<py::ssize_t>(v.size()));
+      std::copy(v.begin(), v.end(), a.mutable_data());
+      return a;
+    };
+    py::array_t<uint64_t> tid(static_cast<py::ssize_t>(s.token_id.size()));
+    std::copy(s.token_id.begin(), s.token_id.end(), tid.mutable_data());
+    return py::make_tuple(tid, vec_i16(s.hb), vec_i16(s.rb), vec_i16(s.sb),
+                          vec_i16(s.ab), s.max_active_hb);
+  }
+
+  inlier::ShortlistResult Shortlist(const Arr<uint64_t> &q_tid,
+                                    const inlier::ShortlistConfig &cfg,
+                                    int topk, double topk_pct) {
+    const auto q = TokenArrayToVector(q_tid);
+    py::gil_scoped_release release;
+    return m_.Shortlist(q, cfg, topk, topk_pct);
+  }
+
+  inlier::BeamResult BeamScore(const Arr<uint64_t> &q_tid,
+                               const Arr<int64_t> &candidate_ids,
+                               const inlier::BEAMScoreConfig &cfg, int topk,
+                               double topk_pct) const {
+    const auto q = TokenArrayToVector(q_tid);
+    const std::vector<int64_t> cands(
+        candidate_ids.data(), candidate_ids.data() + candidate_ids.size());
+    py::gil_scoped_release release;
+    return m_.BeamScore(q, cands, cfg, topk, topk_pct);
+  }
+
+  inlier::RerankResult Rerank(const Arr<uint64_t> &q_tid,
+                              const Arr<int64_t> &candidate_ids,
+                              const Arr<int32_t> &candidate_shifts,
+                              const inlier::RerankConfig &cfg, int topk,
+                              double topk_pct) const {
+    const auto q = TokenArrayToVector(q_tid);
+    const std::vector<int64_t> cands(
+        candidate_ids.data(), candidate_ids.data() + candidate_ids.size());
+    const std::vector<int> shifts(
+        candidate_shifts.data(),
+        candidate_shifts.data() + candidate_shifts.size());
+    py::gil_scoped_release release;
+    return m_.Rerank(q, cands, shifts, cfg, topk, topk_pct);
+  }
+
+ private:
+  inlier::Matcher m_;
+};
+
 }  // namespace
 
 PYBIND11_MODULE(_inlier_pybind, m) {
@@ -382,4 +463,79 @@ PYBIND11_MODULE(_inlier_pybind, m) {
       py::arg("points"), py::arg("centers"), py::arg("radius"),
       py::arg("min_neighbors"), py::arg("n_classes"),
       "-> (shape_class (K,) int16, lps (K,3) float32)");
+
+  // --- matcher: DB bookkeeping, MINT shortlist, BEAM score, rerank ---
+  py::class_<inlier::ShortlistConfig>(m, "ShortlistConfig")
+      .def(py::init<>())
+      .def_readwrite("topk", &inlier::ShortlistConfig::topk)
+      .def_readwrite("topk_pct", &inlier::ShortlistConfig::topk_pct)
+      .def_readwrite("min_shared_rows",
+                     &inlier::ShortlistConfig::min_shared_rows)
+      .def_readwrite("mint_mode", &inlier::ShortlistConfig::mint_mode)
+      .def_readwrite("mint_scoring", &inlier::ShortlistConfig::mint_scoring)
+      .def_readwrite("eps", &inlier::ShortlistConfig::eps);
+
+  py::class_<inlier::BEAMScoreConfig>(m, "BEAMScoreConfig")
+      .def(py::init<>())
+      .def_readwrite("topk", &inlier::BEAMScoreConfig::topk)
+      .def_readwrite("topk_pct", &inlier::BEAMScoreConfig::topk_pct)
+      .def_readwrite("min_shared_bins",
+                     &inlier::BEAMScoreConfig::min_shared_bins)
+      .def_readwrite("min_shared_az_cols",
+                     &inlier::BEAMScoreConfig::min_shared_az_cols)
+      .def_readwrite("score_threshold",
+                     &inlier::BEAMScoreConfig::score_threshold);
+
+  py::class_<inlier::RerankConfig>(m, "RerankConfig")
+      .def(py::init<>())
+      .def_readwrite("topk", &inlier::RerankConfig::topk)
+      .def_readwrite("topk_pct", &inlier::RerankConfig::topk_pct)
+      .def_readwrite("scoring_mode", &inlier::RerankConfig::scoring_mode)
+      .def_readwrite("min_shared_rows",
+                     &inlier::RerankConfig::min_shared_rows)
+      .def_readwrite("spatial_tol", &inlier::RerankConfig::spatial_tol)
+      .def_readwrite("score_threshold",
+                     &inlier::RerankConfig::score_threshold)
+      .def_readwrite("eps", &inlier::RerankConfig::eps);
+
+  py::class_<inlier::ShortlistResult>(m, "ShortlistResult")
+      .def_readonly("ids", &inlier::ShortlistResult::ids)
+      .def_readonly("scores", &inlier::ShortlistResult::scores);
+
+  py::class_<inlier::BeamResult>(m, "BeamResult")
+      .def_readonly("ids", &inlier::BeamResult::ids)
+      .def_readonly("scores", &inlier::BeamResult::scores)
+      .def_readonly("yaw_estimates", &inlier::BeamResult::yaw_estimates)
+      .def_readonly("best_shifts", &inlier::BeamResult::best_shifts);
+
+  py::class_<inlier::RerankResult>(m, "RerankResult")
+      .def_readonly("ids", &inlier::RerankResult::ids)
+      .def_readonly("scores", &inlier::RerankResult::scores)
+      .def_readonly("hist_scores", &inlier::RerankResult::hist_scores)
+      .def_readonly("inlier_ratios", &inlier::RerankResult::inlier_ratios)
+      .def_readonly("inlier_counts", &inlier::RerankResult::inlier_counts)
+      .def_readonly("yaw_estimates", &inlier::RerankResult::yaw_estimates)
+      .def_readonly("best_shifts", &inlier::RerankResult::best_shifts);
+
+  py::class_<PyMatcher>(m, "_Matcher")
+      .def(py::init<const inlier::InLiERConfig &>(), py::arg("config"))
+      .def("add", &PyMatcher::Add, py::arg("database_id"),
+           py::arg("token_id"))
+      .def("reset", &PyMatcher::Reset)
+      .def("finalize", &PyMatcher::Finalize)
+      .def("__len__", &PyMatcher::Size)
+      .def_property_readonly("finalized", &PyMatcher::Finalized)
+      .def("db_ids", &PyMatcher::DbIds)
+      .def("get_scan_data", &PyMatcher::GetScanData, py::arg("database_id"),
+           "-> (token_id, hb, rb, sb, ab, max_active_hb)")
+      .def("shortlist", &PyMatcher::Shortlist, py::arg("query_token_id"),
+           py::arg("config"), py::arg("topk") = -1,
+           py::arg("topk_pct") = -1.0)
+      .def("beam_score", &PyMatcher::BeamScore, py::arg("query_token_id"),
+           py::arg("candidate_ids"), py::arg("config"), py::arg("topk") = -1,
+           py::arg("topk_pct") = -1.0)
+      .def("rerank", &PyMatcher::Rerank, py::arg("query_token_id"),
+           py::arg("candidate_ids"), py::arg("candidate_shifts"),
+           py::arg("config"), py::arg("topk") = -1,
+           py::arg("topk_pct") = -1.0);
 }
