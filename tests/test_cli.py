@@ -6,6 +6,24 @@ import pytest
 from inlier.cli.main import main
 
 
+@pytest.fixture(autouse=True)
+def _reset_verbosity():
+    """Keep the global verbosity from leaking between tests.
+
+    `--version` exits during argument parsing, so the `-q` pre-scan that made
+    it quiet never reaches the usual per-command reset.  Harmless in a real
+    one-shot process; not harmless when every test shares an interpreter.
+    """
+    from inlier import verbosity
+
+    verbosity.set_verbosity(verbosity.NORMAL)
+    yield
+    verbosity.set_verbosity(verbosity.NORMAL)
+
+
+LOGO_MARKER = "Intermediate LiDAR Encoding for Retrieval"
+
+
 def _run(capsys, *argv):
     code = main(list(argv))
     return code, capsys.readouterr()
@@ -17,16 +35,31 @@ def test_no_command_prints_help(capsys):
     assert "usage: inlier" in out.out
 
 
-def test_version_flag(capsys):
+def test_version_flag_prints_the_banner(capsys):
     with pytest.raises(SystemExit) as exc:
         main(["--version"])
     assert exc.value.code == 0
-    assert "inlier" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert LOGO_MARKER in out
+    assert "version :" in out
+
+
+def test_quiet_version_stays_machine_readable(capsys):
+    """`inlier -q --version` is the form a script or CI check should parse."""
+    import inlier
+
+    with pytest.raises(SystemExit) as exc:
+        main(["-q", "--version"])
+    assert exc.value.code == 0
+    out = capsys.readouterr().out
+    assert LOGO_MARKER not in out
+    assert out.strip() == f"inlier {inlier.__version__}"
 
 
 def test_config_show_reports_the_resolved_values(capsys):
     code, out = _run(capsys, "config", "show")
     assert code == 0
+    assert LOGO_MARKER in out.out
     assert "encoder (InLiER_Config)" in out.out
     assert "mint_scoring" in out.out
     # eval mode must say it moved the stage thresholds
@@ -34,11 +67,20 @@ def test_config_show_reports_the_resolved_values(capsys):
 
 
 def test_config_dump_is_loadable_yaml(capsys, tmp_path):
+    """dump has no banner: its output has to stay usable as a --config file."""
     code, out = _run(capsys, "config", "dump")
     assert code == 0
+    assert LOGO_MARKER not in out.out
     import yaml
     cfg = yaml.safe_load(out.out)
     assert cfg["encoder"]["N_h"] == 10
+
+
+def test_config_show_banner_suppressed_by_quiet(capsys):
+    code, out = _run(capsys, "config", "show", "-q")
+    assert code == 0
+    assert LOGO_MARKER not in out.out
+    assert "encoder (InLiER_Config)" in out.out
 
 
 @pytest.mark.parametrize("argv", [

@@ -18,6 +18,32 @@ from typing import List, Optional, Sequence
 from inlier.cli._common import BACKENDS, add_global_flags, apply_backend, apply_verbosity
 from inlier.version import __version__
 
+
+class _VersionAction(argparse.Action):
+    """``--version`` prints the banner; ``-q --version`` prints just the string.
+
+    The banner is the friendlier answer for a human, but ``inlier --version``
+    is also the obvious thing to parse in a script or a CI check, so quiet mode
+    keeps the bare ``inlier <version>`` line.  Printing the banner costs
+    nothing: ``inlier.core.banner`` pulls in neither the compiled extension nor
+    small_gicp.
+    """
+
+    def __init__(self, option_strings, dest, **kwargs):
+        kwargs.setdefault("nargs", 0)
+        kwargs.setdefault("help", "show the version and exit")
+        super().__init__(option_strings, dest, **kwargs)
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        from inlier import verbosity
+        from inlier.core.banner import print_banner
+
+        if verbosity.is_quiet():
+            print(f"inlier {__version__}")
+        else:
+            print_banner()
+        parser.exit()
+
 # subcommand name -> module providing register(subparsers, parent)
 COMMANDS = {
     "doctor": "inlier.cli.cmd_doctor",
@@ -44,6 +70,19 @@ run 'inlier <command> --help' for per-command options.
 """
 
 
+def _prescan_quiet(argv: Sequence[str]) -> None:
+    """Apply ``-q`` before parsing, so actions that fire during it honour it.
+
+    ``--version`` runs inside ``parse_args``, which is before the parsed
+    namespace exists -- without this, ``inlier -q --version`` would still print
+    the banner.
+    """
+    from inlier import verbosity
+
+    if any(token in ("-q", "--quiet") for token in argv):
+        verbosity.set_verbosity(verbosity.QUIET)
+
+
 def _prescan_backend(argv: Sequence[str]) -> None:
     """Apply ``--backend`` before any command module imports ``inlier.core``."""
     backend = "auto"
@@ -63,7 +102,7 @@ def build_parser() -> argparse.ArgumentParser:
         epilog=EPILOG,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("--version", action="version", version=f"inlier {__version__}")
+    parser.add_argument("--version", action=_VersionAction)
 
     # Global flags go on the top level *and*, through this parent, on every
     # subcommand -- so they are accepted on either side of the command name.
@@ -106,6 +145,7 @@ def _register_unavailable(subparsers, parent, name: str, exc: Exception) -> None
 def main(argv: Optional[List[str]] = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     _prescan_backend(argv)
+    _prescan_quiet(argv)
 
     parser = build_parser()
     # Some subcommands (inlier gt build/validate) wrap a script whose full flag

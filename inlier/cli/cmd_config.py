@@ -55,6 +55,12 @@ def _print_dataclass(title: str, obj) -> None:
 def _show(args: argparse.Namespace) -> int:
     from inlier.cli._common import load_config
     from inlier.config import resolve
+    from inlier.core.banner import print_banner
+
+    # `show` is for a human deciding whether the run is set up right, so it
+    # gets the banner.  `dump` deliberately does not -- its output has to stay
+    # loadable as a config file.
+    print_banner()
 
     cfg = load_config(args)
     r = resolve(cfg, mode=args.mode)
