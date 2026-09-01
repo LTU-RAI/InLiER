@@ -1,3 +1,6 @@
+from inlier.verbosity import is_quiet
+from inlier.version import __version__ as _PKG_VERSION
+
 # Standard figlet "InLiER" (kept as plain ASCII).
 _LOGO = r"""
   ___       _     _ _____ ____
@@ -10,7 +13,11 @@ _LOGO = r"""
 _WIDTH = 50
 
 
-def print_banner(version: str = "0.2.0"):
+def print_banner(version: str | None = None):
+    if is_quiet():
+        return
+    if version is None:
+        version = _PKG_VERSION
     print(_LOGO.rstrip("\n"))
     print()
     print(" Intermediate LiDAR Encoding for Retrieval")
@@ -22,6 +29,8 @@ def print_banner(version: str = "0.2.0"):
 
 def print_config_banner(config):
     """Print selected encoder parameters as a plain aligned table."""
+    if is_quiet():
+        return
     rows = [
         ("N_h", getattr(config, "N_h", None)),
         ("z_min", getattr(config, "z_min", None)),
