@@ -36,9 +36,10 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-_SCRIPT_DIR = Path(__file__).resolve().parent
-_REPO = _SCRIPT_DIR.parent
-_EVAL = _REPO / "evaluation" / "evaluate_inlier_helipr.py"
+# Relative paths (overlap_matrices/, results/) are resolved from wherever the
+# user invoked the CLI -- the module now ships inside the installed package, so
+# there is no repository root to anchor them to.
+_CWD = Path.cwd()
 
 # stage -> which timing key in results["timing"]
 _TIMING_KEYS = [
@@ -72,9 +73,14 @@ def run_backend(backend: str, out_dir: Path, passthrough: List[str]) -> float:
     env = dict(os.environ)
     env["INLIER_FORCE_PYTHON"] = "1" if backend == "python" else "0"
 
-    argv = [sys.executable, str(_EVAL), *passthrough,
-            "--output_dir", str(out_dir),
-            "--cache_dir", ""]  # empty => no cache => encode from scratch
+    # Drive the CLI rather than a script path: the evaluation now lives in
+    # the installed package.  A subprocess per backend is still required --
+    # INLIER_FORCE_PYTHON is read when inlier.core is first imported, so the
+    # two backends cannot share an interpreter.
+    argv = [sys.executable, "-m", "inlier.cli.main", "eval", "cross-session",
+            *passthrough,
+            "--output-dir", str(out_dir),
+            "--cache-dir", ""]  # empty => no cache => encode from scratch
 
     print("=" * 74)
     print(f"  RUN [{backend}]  (backend={backend}, cache disabled)")
@@ -82,7 +88,7 @@ def run_backend(backend: str, out_dir: Path, passthrough: List[str]) -> float:
     print("=" * 74, flush=True)
 
     t0 = time.time()
-    proc = subprocess.run(argv, env=env, cwd=str(_REPO))
+    proc = subprocess.run(argv, env=env, cwd=str(_CWD))
     wall = time.time() - t0
     if proc.returncode != 0:
         sys.exit(f"[{backend}] eval failed (exit {proc.returncode})")
@@ -235,7 +241,7 @@ def compare(res: Dict[str, Dict[str, Any]], walls: Dict[str, float]) -> str:
     return "\n".join(lines)
 
 
-def main() -> None:
+def main(argv=None) -> None:
     ap = argparse.ArgumentParser(
         description="Full-eval C++ vs Python benchmark (from scratch).",
         epilog="All other args are forwarded verbatim to "
@@ -244,10 +250,8 @@ def main() -> None:
                     help="Root for per-backend outputs and the comparison.")
     ap.add_argument("--backends", default="cpp,python",
                     help="Comma list of backends to run: cpp,python (order = run order).")
-    args, passthrough = ap.parse_known_args()
+    args, passthrough = ap.parse_known_args(argv)
 
-    if not _EVAL.exists():
-        sys.exit(f"eval script not found: {_EVAL}")
 
     backends = [b.strip() for b in args.backends.split(",") if b.strip()]
     for b in backends:
