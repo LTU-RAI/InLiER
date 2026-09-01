@@ -58,7 +58,11 @@ build-dir = "build/{wheel_tag}"
 wheel.packages = ["inlier"]
 # ship the packaged default config; inlier.config merges user files onto it
 sdist.include = ["inlier/config/default.yaml"]
+# Rebuild the extension on import, so editing cpp/ does not need a reinstall --
+# but quietly: verbose=true prints a cmake/ninja log ahead of every single
+# `inlier` invocation, which buries the command's own output.
 editable.rebuild = true
+editable.verbose = false
 
 [tool.scikit-build.cmake.define]
 CMAKE_BUILD_TYPE = "Release"
