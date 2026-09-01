@@ -1,0 +1,121 @@
+"""CLI smoke tests: dispatch, flag placement, exit codes, artifacts."""
+
+import numpy as np
+import pytest
+
+from inlier.cli.main import main
+
+
+def _run(capsys, *argv):
+    code = main(list(argv))
+    return code, capsys.readouterr()
+
+
+def test_no_command_prints_help(capsys):
+    code, out = _run(capsys, )
+    assert code == 0
+    assert "usage: inlier" in out.out
+
+
+def test_version_flag(capsys):
+    with pytest.raises(SystemExit) as exc:
+        main(["--version"])
+    assert exc.value.code == 0
+    assert "inlier" in capsys.readouterr().out
+
+
+def test_config_show_reports_the_resolved_values(capsys):
+    code, out = _run(capsys, "config", "show")
+    assert code == 0
+    assert "encoder (InLiER_Config)" in out.out
+    assert "mint_scoring" in out.out
+    # eval mode must say it moved the stage thresholds
+    assert "-2.0" in out.out
+
+
+def test_config_dump_is_loadable_yaml(capsys, tmp_path):
+    code, out = _run(capsys, "config", "dump")
+    assert code == 0
+    import yaml
+    cfg = yaml.safe_load(out.out)
+    assert cfg["encoder"]["N_h"] == 10
+
+
+@pytest.mark.parametrize("argv", [
+    ["config", "show", "--set", "stage1.topk=7"],
+    ["--set", "stage1.topk=7", "config", "show"],
+])
+def test_global_flags_work_on_either_side_of_the_command(capsys, argv):
+    """A value given before the command name must not be clobbered by the
+    subparser's default -- the reason the subcommand copies use SUPPRESS."""
+    code, out = _run(capsys, *argv)
+    assert code == 0
+    assert "stage1.topk=7" in out.out
+
+
+def test_bad_config_key_exits_nonzero_without_a_traceback(capsys):
+    code, out = _run(capsys, "config", "show", "--set", "stage1.topkk=7")
+    assert code == 1
+    assert "unknown config key" in out.err
+    assert "Traceback" not in out.err
+
+
+def test_doctor_runs_and_reports_a_backend(capsys):
+    code, out = _run(capsys, "doctor")
+    assert code in (0, 1)
+    assert "backend" in out.out
+    assert ("cpp" in out.out) or ("python" in out.out)
+
+
+def test_doctor_flags_a_missing_dataset(capsys, tmp_path):
+    code, out = _run(capsys, "doctor", "--dataset", str(tmp_path / "nope"))
+    assert code == 1
+    assert "does not exist" in out.out
+
+
+def test_doctor_flags_a_helipr_tree_without_undistorted(capsys, tmp_path):
+    """Every evaluation reads Undistorted/, never the distorted LiDAR/."""
+    (tmp_path / "Seq01" / "LiDAR" / "Ouster").mkdir(parents=True)
+    code, out = _run(capsys, "doctor", "--dataset", str(tmp_path))
+    assert code == 1
+    assert "Undistorted" in out.out
+
+
+@pytest.fixture
+def scan_file(tmp_path):
+    rng = np.random.default_rng(5)
+    pts = np.concatenate([
+        np.stack([rng.uniform(-40, 40, 8000), rng.uniform(-40, 40, 8000),
+                  rng.normal(0, 0.05, 8000)], axis=1),
+        np.stack([rng.normal(10, 0.05, 2000), rng.normal(5, 0.05, 2000),
+                  rng.uniform(0.2, 8.0, 2000)], axis=1),
+    ]).astype(np.float32)
+    path = tmp_path / "scan.npy"
+    np.save(path, pts)
+    return path
+
+
+def test_encode_writes_tokens_with_their_radices(capsys, scan_file, tmp_path):
+    out_path = tmp_path / "tokens.npz"
+    code, _ = _run(capsys, "encode", str(scan_file), "-o", str(out_path), "--quiet")
+    assert code == 0
+    data = np.load(out_path)
+    assert data["token_id"].ndim == 1
+    assert data["kp_sensor"].shape[1] == 3
+    # tokens are meaningless without the radices they were packed with
+    for key in ("N_h", "N_r", "N_s", "N_a", "voxel_size"):
+        assert key in data
+
+
+def test_encode_a_directory_writes_one_npz_per_scan(capsys, scan_file, tmp_path):
+    out_dir = tmp_path / "out"
+    code, _ = _run(capsys, "encode", str(scan_file.parent), "-o", str(out_dir), "--quiet")
+    assert code == 0
+    assert (out_dir / "scan.npz").exists()
+
+
+def test_encode_reports_a_missing_input(capsys, tmp_path):
+    code, out = _run(capsys, "encode", str(tmp_path / "none.pcd"),
+                     "-o", str(tmp_path / "x.npz"))
+    assert code == 1
+    assert "Traceback" not in out.err

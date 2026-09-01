@@ -1,0 +1,129 @@
+"""Shared CLI plumbing: global flags, backend selection, verbosity.
+
+Backend selection is the awkward one.  ``inlier/core/InLiER.py`` decides
+between the compiled extension and the numpy reference at *import* time, by
+reading ``INLIER_FORCE_PYTHON`` -- so ``--backend python`` has to reach the
+environment before ``inlier.core`` is first imported.  That is why
+``inlier/__init__.py`` is lazy and why nothing in this package imports
+``inlier.core`` at module level: :func:`apply_backend` runs during argument
+parsing, well before any command touches the encoder.
+
+``scripts/benchmark_cpp_vs_py.py`` solved the same problem by re-executing a
+subprocess with a modified environment; that still works and is what
+``inlier bench`` does, since it needs a clean process per backend anyway.
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+from pathlib import Path
+from typing import List, Optional, Sequence
+
+BACKENDS = ("auto", "cpp", "python")
+
+
+def add_global_flags(parser: argparse.ArgumentParser, suppress: bool = False) -> None:
+    """Flags every subcommand accepts.
+
+    Added to both the top-level parser and (via ``parents=``) every
+    subcommand, so ``inlier --backend python doctor`` and
+    ``inlier doctor --backend python`` both work.  The subcommand copies use
+    ``default=SUPPRESS`` (``suppress=True``) so that omitting a flag there does
+    not overwrite a value given before the subcommand -- with ordinary
+    defaults, argparse writes the subparser's default into the shared
+    namespace and silently discards the top-level value.
+    """
+    def default(value):
+        return argparse.SUPPRESS if suppress else value
+
+    group = parser.add_argument_group("common options")
+    group.add_argument(
+        "-c", "--config", type=str, default=default(None), metavar="FILE",
+        help="YAML config; merged onto the packaged defaults "
+             "(inlier/config/default.yaml). Omit to use the defaults alone.",
+    )
+    group.add_argument(
+        "--set", dest="overrides", action="append", default=default([]), metavar="KEY=VALUE",
+        help="Override one config key, e.g. --set stage1.topk=50 "
+             "--set verify.skip=true. Repeatable; applied after --config.",
+    )
+    group.add_argument(
+        "--backend", choices=BACKENDS, default=default("auto"),
+        help="Computation backend. 'auto' uses the C++ core when importable "
+             "and falls back to the numpy reference. (default: auto)",
+    )
+    group.add_argument(
+        "-q", "--quiet", action="store_true", default=default(False),
+        help="Suppress the encoder banner and per-stage progress output.",
+    )
+    group.add_argument(
+        "-v", "--verbose", action="store_true", default=default(False),
+        help="Extra diagnostics.",
+    )
+
+
+def apply_backend(backend: str) -> None:
+    """Set ``INLIER_FORCE_PYTHON`` before anything imports ``inlier.core``."""
+    if backend == "python":
+        os.environ["INLIER_FORCE_PYTHON"] = "1"
+    elif backend == "cpp":
+        # Clear any inherited force-python so 'cpp' really means cpp.  If the
+        # extension is missing the core still falls back with a warning; that
+        # is reported by `inlier doctor` rather than raised here.
+        os.environ.pop("INLIER_FORCE_PYTHON", None)
+
+
+def apply_verbosity(args: argparse.Namespace) -> None:
+    from inlier import verbosity
+
+    if getattr(args, "quiet", False):
+        verbosity.set_verbosity(verbosity.QUIET)
+    elif getattr(args, "verbose", False):
+        verbosity.set_verbosity(verbosity.DEBUG)
+    else:
+        verbosity.set_verbosity(verbosity.NORMAL)
+
+
+def load_config(args: argparse.Namespace):
+    """Merged config dict from ``--config`` + ``--set``."""
+    from inlier.config import load
+
+    return load(args.config, args.overrides)
+
+
+def resolved_config(args: argparse.Namespace, mode: str = "eval"):
+    from inlier.config import resolve
+
+    return resolve(load_config(args), mode=mode)
+
+
+def current_backend() -> str:
+    """Which backend actually loaded.  Imports the core, so call it late."""
+    from inlier.core.InLiER import _BACKEND
+
+    return _BACKEND
+
+
+def add_alias(parser: argparse.ArgumentParser, *names: str, **kwargs) -> None:
+    """Add a flag under both --kebab-case and --snake_case spellings.
+
+    The existing scripts and every command line in the README use snake_case.
+    The CLI standardises on kebab-case, and keeps the old spelling working so
+    documented invocations do not break.
+    """
+    primary = names[0]
+    aliases = [primary]
+    for name in names:
+        snake = name.replace("-", "_")
+        if snake != name and snake not in aliases:
+            aliases.append(snake)
+    dest = kwargs.pop("dest", primary.lstrip("-").replace("-", "_"))
+    parser.add_argument(*aliases, dest=dest, **kwargs)
+
+
+def existing_path(value: str) -> Path:
+    p = Path(value).expanduser()
+    if not p.exists():
+        raise argparse.ArgumentTypeError(f"path does not exist: {p}")
+    return p
