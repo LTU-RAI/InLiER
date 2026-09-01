@@ -239,6 +239,18 @@ prints exactly what will run, including the values derived from `voxel_size`:
 inlier config show --set stage1.topk=50
 ```
 
+`inlier doctor` checks `--dataset` against the layout `--dataset-type` names —
+the same flag `inlier eval` takes, defaulting to `helipr`. The two layouts have
+nothing in common, so point it at the right one:
+
+```bash
+inlier doctor --dataset /data/HeLiPR                          # <seq>/Undistorted/<sensor>/
+inlier doctor --dataset /data/campus --dataset-type generic   # scans/ + poses_kitti.txt
+```
+
+A dataset checked against the wrong layout is reported as a layout mismatch
+rather than as empty.
+
 ### Inspecting a descriptor
 
 `inlier encode --viz` draws one page per scan: the cloud and its keypoints in

@@ -3,9 +3,16 @@
 Covers the failure modes that otherwise show up as a confusing result rather
 than an error: the C++ extension silently falling back to the numpy reference
 (a ~2x slowdown that only prints an import warning), a missing optional
-dependency, a HeLiPR tree without the ``Undistorted/`` scans every evaluation
-script reads from, and an overlap matrix built with different submap
-parameters than the evaluation is about to use.
+dependency, a dataset laid out differently than its loader expects, and an
+overlap matrix built with different submap parameters than the evaluation is
+about to use.
+
+``--dataset`` is checked against whichever layout ``--dataset-type`` names --
+the same flag ``inlier eval`` takes, with the same default -- because the two
+layouts share nothing: HeLiPR is per-sequence ``Undistorted/<sensor>/`` scan
+directories, generic is one flat ``scans/`` plus a pose file.  Checking a
+dataset against the wrong layout used to report it as empty, so a mismatch is
+now called out by name.
 """
 
 from __future__ import annotations
@@ -30,7 +37,10 @@ def register(subparsers, parent) -> None:
                     "layout and ground-truth consistency.",
     )
     p.add_argument("--dataset", type=str, default=None,
-                   help="dataset root to check (HeLiPR layout)")
+                   help="dataset root to check, against --dataset-type's layout")
+    p.add_argument("--dataset-type", "--dataset_type", dest="dataset_type",
+                   choices=("helipr", "generic"), default="helipr",
+                   help="layout to check --dataset against (default: helipr)")
     p.add_argument("--overlap-dir", "--overlap_dir", dest="overlap_dir",
                    type=str, default="overlap_matrices",
                    help="directory of overlap matrices to check for sidecars")
@@ -120,7 +130,7 @@ def run(args: argparse.Namespace) -> int:
         failures += 1
 
     if args.dataset:
-        failures += _check_dataset(Path(args.dataset))
+        failures += _check_dataset(Path(args.dataset), args.dataset_type)
 
     warnings += _check_overlap_sidecars(Path(args.overlap_dir))
 
@@ -134,15 +144,43 @@ def run(args: argparse.Namespace) -> int:
     return 1 if failures else 0
 
 
-def _check_dataset(root: Path) -> int:
+LAYOUTS = {
+    "helipr": "<root>/<sequence>/Undistorted/<sensor>/*.bin",
+    "generic": "<root>/scans/*.pcd + poses_kitti.txt or poses_tum.txt",
+}
+
+
+def _check_dataset(root: Path, dataset_type: str) -> int:
     print(f"\ndataset  {root}")
+    _row(OK, "layout", f"{dataset_type} -- {LAYOUTS[dataset_type]}")
     if not root.exists():
         _row(FAIL, "root", "does not exist")
         return 1
+    if dataset_type == "generic":
+        return _check_generic(root)
+    return _check_helipr(root)
 
+
+def _looks_generic(root: Path) -> bool:
+    return (root / "scans").is_dir()
+
+
+def _looks_helipr(root: Path) -> bool:
+    return any((seq / "Undistorted").is_dir() or (seq / "LiDAR").is_dir()
+               for seq in root.iterdir() if seq.is_dir())
+
+
+def _check_helipr(root: Path) -> int:
     sequences = sorted(p for p in root.iterdir() if p.is_dir())
-    if not sequences:
-        _row(FAIL, "sequences", "no sequence directories found")
+    if not sequences or (_looks_generic(root) and not _looks_helipr(root)):
+        # The most likely reason a HeLiPR check finds nothing is that this is
+        # not a HeLiPR tree.  Say that, rather than "no sequences found".
+        if _looks_generic(root):
+            _row(FAIL, "layout mismatch", "this looks like a generic dataset "
+                                          "(it has scans/) -- pass "
+                                          "--dataset-type generic")
+        else:
+            _row(FAIL, "sequences", "no sequence directories found")
         return 1
     _row(OK, "sequences", f"{len(sequences)} found: "
                           f"{', '.join(p.name for p in sequences[:4])}"
@@ -167,6 +205,76 @@ def _check_dataset(root: Path) -> int:
         if not gt_dir.exists():
             _row(WARN, "", f"{seq.name}: no LiDAR_GT/ (ground-truth poses)")
     return failures
+
+
+def _check_generic(root: Path) -> int:
+    """Flat scans/ + a pose file, per ``Generic_Handler``."""
+    if not _looks_generic(root) and _looks_helipr(root):
+        _row(FAIL, "layout mismatch", "this looks like a HeLiPR tree -- "
+                                      "pass --dataset-type helipr")
+        return 1
+
+    failures = 0
+    scans_dir = root / "scans"
+    if not scans_dir.is_dir():
+        _row(FAIL, "scans/", "not found")
+        return 1
+
+    scans = sorted(scans_dir.glob("*.pcd"))
+    if not scans:
+        _row(FAIL, "scans/", "no .pcd files")
+        failures += 1
+    else:
+        _row(OK, "scans/", f"{len(scans):,} .pcd files")
+
+    n_poses = None
+    for name, kind in (("poses_kitti.txt", "kitti"), ("poses_tum.txt", "tum")):
+        pose_file = root / name
+        if not pose_file.exists():
+            continue
+        n_poses = sum(1 for line in pose_file.read_text().splitlines()
+                      if line.strip() and not line.startswith("#"))
+        _row(OK, "poses", f"{name} ({kind}), {n_poses:,} poses")
+        break
+    else:
+        _row(FAIL, "poses", "no poses_kitti.txt or poses_tum.txt")
+        failures += 1
+
+    # Generic_Handler.load_generic raises on this, well after the submap build
+    # has started; it is cheap to catch here instead.
+    if n_poses is not None and scans and n_poses != len(scans):
+        _row(FAIL, "poses vs scans", f"{n_poses:,} poses but {len(scans):,} "
+                                     f"scans -- load_generic requires they match")
+        failures += 1
+
+    if scans:
+        failures += _check_sample_scan(scans[0])
+    return failures
+
+
+def _check_sample_scan(path: Path) -> int:
+    """Read one scan: catches an unreadable file, and NaN-heavy sensors."""
+    try:
+        import numpy as np
+        import open3d as o3d
+    except ImportError:
+        return 0
+
+    points = np.asarray(o3d.io.read_point_cloud(str(path)).points)
+    if points.size == 0:
+        _row(FAIL, "sample scan", f"{path.name}: no points read")
+        return 1
+
+    n_bad = int((~np.isfinite(points).all(axis=1)).sum())
+    detail = f"{path.name}: {len(points):,} points"
+    if n_bad:
+        # Dropped by the loader now, but a scan that is mostly NaN means the
+        # submaps are far thinner than the file sizes suggest.
+        _row(WARN, "sample scan",
+             f"{detail}, {n_bad:,} non-finite ({n_bad / len(points):.0%}, dropped)")
+    else:
+        _row(OK, "sample scan", detail)
+    return 0
 
 
 def _check_overlap_sidecars(overlap_dir: Path) -> int:

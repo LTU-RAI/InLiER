@@ -280,3 +280,90 @@ def test_encode_viz_survives_non_finite_points(capsys, scan_with_nans, tmp_path)
                    "--viz-save", str(figure), "--quiet")
     assert code == 0
     assert figure.stat().st_size > 0
+
+
+# --- doctor dataset layouts ------------------------------------------------
+
+MINIMAL_PCD = """\
+# .PCD v0.7 - Point Cloud Data file format
+VERSION 0.7
+FIELDS x y z
+SIZE 4 4 4
+TYPE F F F
+COUNT 1 1 1
+WIDTH 3
+HEIGHT 1
+VIEWPOINT 0 0 0 1 0 0 0
+POINTS 3
+DATA ascii
+0 0 0
+1 0 0
+0 1 0
+"""
+
+
+@pytest.fixture
+def generic_dataset(tmp_path):
+    root = tmp_path / "campus"
+    (root / "scans").mkdir(parents=True)
+    for i in range(3):
+        (root / "scans" / f"{i:06d}.pcd").write_text(MINIMAL_PCD)
+    (root / "poses_kitti.txt").write_text(
+        "\n".join(" ".join(["1", "0", "0", str(i), "0", "1", "0", "0",
+                            "0", "0", "1", "0"]) for i in range(3)))
+    return root
+
+
+@pytest.fixture
+def helipr_dataset(tmp_path):
+    root = tmp_path / "HeLiPR"
+    (root / "Roundabout01" / "Undistorted" / "Ouster").mkdir(parents=True)
+    (root / "Roundabout01" / "LiDAR_GT").mkdir()
+    return root
+
+
+def test_doctor_checks_the_generic_layout(capsys, generic_dataset):
+    code, out = _run(capsys, "doctor", "--dataset", str(generic_dataset),
+                     "--dataset-type", "generic")
+    assert code == 0
+    assert "3 .pcd files" in out.out
+    assert "poses_kitti.txt" in out.out
+
+
+def test_doctor_names_the_layout_it_is_checking(capsys, helipr_dataset):
+    code, out = _run(capsys, "doctor", "--dataset", str(helipr_dataset))
+    assert code == 0
+    assert "helipr -- <root>/<sequence>/Undistorted" in out.out
+
+
+def test_doctor_reports_a_generic_tree_checked_as_helipr(capsys, generic_dataset):
+    """Checking the wrong layout used to report the dataset as empty."""
+    code, out = _run(capsys, "doctor", "--dataset", str(generic_dataset))
+    assert code == 1
+    assert "layout mismatch" in out.out
+    assert "--dataset-type generic" in out.out
+
+
+def test_doctor_reports_a_helipr_tree_checked_as_generic(capsys, helipr_dataset):
+    code, out = _run(capsys, "doctor", "--dataset", str(helipr_dataset),
+                     "--dataset-type", "generic")
+    assert code == 1
+    assert "layout mismatch" in out.out
+    assert "--dataset-type helipr" in out.out
+
+
+def test_doctor_catches_a_pose_scan_count_mismatch(capsys, generic_dataset):
+    """`load_generic` raises on this, but only after the submap build starts."""
+    (generic_dataset / "scans" / "000003.pcd").write_text(MINIMAL_PCD)
+    code, out = _run(capsys, "doctor", "--dataset", str(generic_dataset),
+                     "--dataset-type", "generic")
+    assert code == 1
+    assert "3 poses but 4 scans" in out.out
+
+
+def test_doctor_reports_a_generic_dataset_with_no_poses(capsys, generic_dataset):
+    (generic_dataset / "poses_kitti.txt").unlink()
+    code, out = _run(capsys, "doctor", "--dataset", str(generic_dataset),
+                     "--dataset-type", "generic")
+    assert code == 1
+    assert "no poses_kitti.txt or poses_tum.txt" in out.out
