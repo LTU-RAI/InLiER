@@ -15,7 +15,8 @@ import argparse
 import sys
 from typing import List, Optional, Sequence
 
-from inlier.cli._common import BACKENDS, add_global_flags, apply_backend, apply_verbosity
+from inlier.cli._common import (BACKENDS, add_global_flags, apply_backend,
+                                 apply_verbosity, expand_user)
 from inlier.version import __version__
 
 
@@ -61,6 +62,7 @@ examples:
   inlier config show                        what will actually run
   inlier config show --set stage1.topk=50   with one value overridden
   inlier encode scan.pcd -o tokens.npz      encode a single scan
+  inlier encode scan.pcd --viz              plot it and its descriptors
   inlier eval cross-session --help          evaluation protocols
 
 common flags (-c/--config, --set, --backend, -q) are accepted either
@@ -143,7 +145,7 @@ def _register_unavailable(subparsers, parent, name: str, exc: Exception) -> None
 
 
 def main(argv: Optional[List[str]] = None) -> int:
-    argv = list(sys.argv[1:] if argv is None else argv)
+    argv = expand_user(sys.argv[1:] if argv is None else argv)
     _prescan_backend(argv)
     _prescan_quiet(argv)
 

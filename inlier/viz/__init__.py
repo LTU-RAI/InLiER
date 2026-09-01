@@ -1,0 +1,26 @@
+"""Visualisation helpers.
+
+Kept out of ``inlier.core``: nothing here is needed to encode or match, and
+the figure code needs matplotlib, which lives in the ``[eval]`` extra.  The
+submodules import matplotlib lazily, so ``import inlier.viz`` alone is safe
+on a bare install.
+"""
+
+from inlier.viz.descriptors import (  # noqa: F401
+    Descriptors,
+    describe,
+    occupancy,
+    popcount,
+    shape_class_labels,
+)
+
+__all__ = ["Descriptors", "describe", "occupancy", "popcount",
+           "shape_class_labels", "encode_figure"]
+
+
+def __getattr__(name: str):
+    if name == "encode_figure":
+        from inlier.viz.figures import encode_figure
+
+        return encode_figure
+    raise AttributeError(f"module 'inlier.viz' has no attribute {name!r}")

@@ -87,11 +87,17 @@ class Generic_Handler:
         return files
 
     def load_scan_file(self, pcd_path: Path) -> np.ndarray:
-        """Read a single .pcd file and return (N, 3) float32 points."""
+        """Read a single .pcd file and return (N, 3) float32 points.
+
+        Non-finite points are dropped here rather than downstream: sensors
+        write NaN for invalid returns, and the points are then accumulated
+        into submaps and handed to GICP as raw clouds, neither of which
+        tolerates them.
+        """
         import open3d as o3d  # lazy import
         pcd = o3d.io.read_point_cloud(str(pcd_path))
         pts = np.asarray(pcd.points, dtype=np.float32)
-        return pts
+        return pts[np.isfinite(pts).all(axis=1)]
 
     # ------------------------------------------------------------------
     # Main entry point: submap accumulation

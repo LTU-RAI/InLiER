@@ -217,7 +217,7 @@ inlier --help
 |---|---|
 | `inlier doctor` | check the backend, dependencies, dataset layout, and ground-truth consistency |
 | `inlier config show` \| `dump` | print the effective configuration — after merging defaults, `--config`, and `--set` |
-| `inlier encode` | run just the encoder on a scan or a directory, writing keypoints + tokens |
+| `inlier encode` | run just the encoder on a scan or a directory, writing keypoints + tokens, and optionally plotting them |
 | `inlier gt build` \| `validate` | build or sanity-check the overlap ground truth |
 | `inlier eval cross-session` | run the evaluation protocol |
 | `inlier play` | replay a finished run as an animation |
@@ -238,6 +238,29 @@ prints exactly what will run, including the values derived from `voxel_size`:
 ```bash
 inlier config show --set stage1.topk=50
 ```
+
+### Inspecting a descriptor
+
+`inlier encode --viz` draws one page per scan: the cloud and its keypoints in
+the ground-aligned frame the encoder bins in, then the three matrices the
+matcher actually scores on — the token histogram `H`, the MINT row `R` that
+stage 1 compares, and the BEAM elevation codes `A` that stage 2 shifts and
+scores — plus the shape-class and height-slice distributions.
+
+```bash
+inlier encode scan.bin --viz                       # open a window
+inlier encode scan.bin --viz-save scan.png         # write it instead
+inlier encode scans/ -o tokens/ --viz-save figs/   # one figure per scan
+```
+
+`--viz-save` forces a headless backend, so it works over ssh and in CI. It is
+required when the input is a directory, since `--viz` alone would open a window
+per scan. `-o/--output` is optional when you only want the figure.
+
+This is the quickest way to tell whether a token grid suits a new sensor: if
+the top height slices are empty, `z_max` is too high for the platform; if the
+BEAM panel is nearly all one colour, `N_r`/`N_a` are too coarse to separate
+structure.
 
 > **Migrating from 0.2.x** — the scripts under `evaluation/` are now thin shims
 > that print the equivalent `inlier` command and forward. They are removed in

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 from pathlib import Path
 from typing import List, Optional, Sequence
 
@@ -127,3 +128,39 @@ def existing_path(value: str) -> Path:
     if not p.exists():
         raise argparse.ArgumentTypeError(f"path does not exist: {p}")
     return p
+
+
+def user_path(value: str) -> Path:
+    """argparse ``type=`` for a path that may start with ``~`` or ``$VAR``."""
+    return Path(os.path.expandvars(os.path.expanduser(value)))
+
+
+# `--opt=~/x` only; a bare `~/x` is handled separately, and `--opt ~/x` was
+# already expanded by the shell before argv was built.
+_OPT_WITH_TILDE = re.compile(r"^(--[A-Za-z0-9][\w-]*)=(~.*)$")
+
+
+def expand_user(argv: Sequence[str]) -> List[str]:
+    """Expand a leading ``~`` that the shell left alone.
+
+    bash only expands a tilde at the start of a word, so ``--dataset ~/data``
+    arrives as an absolute path but ``--dataset=~/data`` arrives with a
+    literal ``~`` -- which then fails as a missing directory that is plainly
+    there.  zsh expands both, so the bug only bites bash users.  Doing this on
+    argv rather than per-argument covers the commands that forward their
+    leftovers to a wrapped parser too.
+
+    Values that are not paths are left alone: ``--set stage1.topk=~x`` goes to
+    the config parser, not the filesystem.
+    """
+    out: List[str] = []
+    for token in argv:
+        if token.startswith("~"):
+            out.append(os.path.expanduser(token))
+            continue
+        match = _OPT_WITH_TILDE.match(token)
+        if match:
+            out.append(f"{match.group(1)}={os.path.expanduser(match.group(2))}")
+            continue
+        out.append(token)
+    return out

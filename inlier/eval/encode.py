@@ -62,7 +62,24 @@ def cache_path(cache_dir: Path, tag: str, cfg: InLiER_Config, voxel_size: float)
 
 
 def voxel_downsample(points: np.ndarray, voxel_size: float) -> np.ndarray:
-    """Grid-hash downsample, keeping the first point in each occupied voxel."""
+    """Grid-hash downsample, keeping the first point in each occupied voxel.
+
+    Non-finite points are dropped first.  They are not merely useless here:
+    ``np.floor(nan).astype(np.int64)`` is INT64_MIN, so every NaN point hashes
+    into one bogus voxel that then wins ``np.unique``'s first-index draw
+    against a real one.  A scan with NaNs therefore loses real points and
+    encodes differently, silently.  Sensors mark invalid returns as NaN and
+    the .pcd loaders pass them straight through.
+
+    The HeLiPR undistorted binaries carry no non-finite points, so this
+    changes nothing for the published results; it matters for the generic
+    .pcd path.
+    """
+    if points.size == 0:
+        return points
+    finite = np.isfinite(points).all(axis=1)
+    if not finite.all():
+        points = points[finite]
     if voxel_size <= 0 or points.size == 0:
         return points
     keys = np.floor(points / voxel_size).astype(np.int64)
