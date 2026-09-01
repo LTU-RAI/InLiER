@@ -1,6 +1,6 @@
 [build-system]
-requires = ["setuptools>=61", "wheel"]
-build-backend = "setuptools.build_meta"
+requires = ["scikit_build_core", "pybind11"]
+build-backend = "scikit_build_core.build"
 
 [project]
 name = "inlier"
@@ -28,14 +28,23 @@ dependencies = [
 # Everything under evaluation/: overlap-GT building (scripts/), the HeLiPR
 # evaluation entry point, and the playback visualization.
 eval = ["pyyaml", "scipy", "open3d", "tqdm", "matplotlib", "pandas"]
+test = ["pytest"]
 
 [project.urls]
 Homepage = "https://github.com/LTU-RAI/InLiER"
 
-# `inlier` is the pure-Python core: the encoder (inlier.core.InLiER) and the
-# matcher (inlier.core.InLiER_Matcher). The C++ core and ROS node will be added
-# later as top-level `cpp/` and `ros/` siblings. `evaluation/` and `config/` are
-# dev tooling; the dataset I/O layer lives in `evaluation/utils/` because only
-# the evaluation scripts use it — the core never imports it.
-[tool.setuptools.packages.find]
-include = ["inlier*"]
+# `inlier` is the Python package: the encoder (inlier.core.InLiER) and the
+# matcher (inlier.core.InLiER_Matcher) wrap the C++ core in `cpp/inlier_core/`
+# through the pybind11 bindings in `python/pybind/`, with the pure-numpy
+# reference kept under `inlier/core/reference/` as the fallback. The ROS node
+# will be added later as a top-level `ros/` sibling. `evaluation/` and `config/`
+# are dev tooling; the dataset I/O layer lives in `evaluation/utils/` because
+# only the evaluation scripts use it — the core never imports it.
+[tool.scikit-build]
+cmake.version = ">=3.16"
+build-dir = "build/{wheel_tag}"
+wheel.packages = ["inlier"]
+editable.rebuild = true
+
+[tool.scikit-build.cmake.define]
+CMAKE_BUILD_TYPE = "Release"
