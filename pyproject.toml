@@ -33,11 +33,13 @@ test = ["pytest"]
 [project.urls]
 Homepage = "https://github.com/LTU-RAI/InLiER"
 
-# `inlier` is the pure-Python core: the encoder (inlier.core.InLiER) and the
-# matcher (inlier.core.InLiER_Matcher). The C++ core and ROS node will be added
-# later as top-level `cpp/` and `ros/` siblings. `evaluation/` and `config/` are
-# dev tooling; the dataset I/O layer lives in `evaluation/utils/` because only
-# the evaluation scripts use it — the core never imports it.
+# `inlier` is the Python package: the encoder (inlier.core.InLiER) and the
+# matcher (inlier.core.InLiER_Matcher) wrap the C++ core in `cpp/inlier_core/`
+# through the pybind11 bindings in `python/pybind/`, with the pure-numpy
+# reference kept under `inlier/core/reference/` as the fallback. The ROS node
+# will be added later as a top-level `ros/` sibling. `evaluation/` and `config/`
+# are dev tooling; the dataset I/O layer lives in `evaluation/utils/` because
+# only the evaluation scripts use it — the core never imports it.
 [tool.scikit-build]
 cmake.version = ">=3.16"
 build-dir = "build/{wheel_tag}"

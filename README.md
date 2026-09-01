@@ -34,13 +34,21 @@ The pipeline re-organizes one token vocabulary across three stages:
 - 💥 <span style="color:red">**BEAM**</span> *(Binary Elevation-Azimuth Matching)* — bitmask alignment for yaw estimation and reranking.
 - ✔️ **Verify** — token-guided geometric verification for 6-DoF pose estimation.
 
+## 📰 Latest News
+
+- **[2026-09-01]** ⚡ The **C++ core** is out — the encoder, MINT/BEAM matcher, and token-guided verification are now C++17 with pybind11 bindings, behind the same Python API. Up to **39× faster verification** and **2.1× end-to-end** on the HeLiPR benchmark; see [C++ Core](#-c-core).
+- **[2026-08-13]** 📄 The **published RA-L version** is out — IEEE Robotics and Automation Letters, vol. 11, no. 10, pp. 11275–11282, [10.1109/LRA.2026.3723737](https://doi.org/10.1109/LRA.2026.3723737).
+- **[2026-07-21]** 🎉 **Preprint and code released** — the paper is on [arXiv](https://arxiv.org/abs/2607.16862) and the Python implementation is public.
+- **[2026-07-18]** ✅ The paper is **accepted** to IEEE Robotics and Automation Letters (RA-L).
+
 ## 📋 Table of Contents
 
 - [💡 Introduction](#-introduction)
-- [🚀 Setup](#-setup) — [Prerequisites](#prerequisites) • [Installation](#installation) • [Environment Setup](#environment-setup)
+- [🚀 Setup](#-setup) — [Prerequisites](#prerequisites) • [Installation](#installation) • [Environment Setup](#environment-setup) • [Verifying the Build](#verifying-the-build)
+- [⚡ C++ Core](#-c-core) — [Backend Selection](#backend-selection) • [Benchmarks](#benchmarks) • [Equivalence Tests](#equivalence-tests)
 - [🕹️ Run the Example](#️-run-the-example) — [Dataset Setup](#dataset-setup) • [Building Overlap GT](#building-overlap-ground-truth) • [Validating Overlaps](#validate-calculated-overlaps) • [Configuration](#configuration) • [Evaluation](#running-the-evaluation) • [Visualization](#visualization)
 - [🗃️ Test Your Own Data](#️-test-your-own-data) — [Dataset Layout](#dataset-layout) • [Overlap Ground Truth](#overlap-ground-truth) • [Evaluation](#evaluation)
-- [🔜 Coming Soon](#-coming-soon) — [C++ Implementation](#c-implementation) • [CLI Support](#cli-support) • [ROS2 Support](#ros2-support)
+- [🔜 Coming Soon](#-coming-soon) — [CLI Support](#cli-support) • [ROS2 Support](#ros2-support)
 - [🙏 Acknowledgements](#-acknowledgements)
 - [📝 Citation](#-citation)
 - [📬 Contact](#-contact)
@@ -50,7 +58,18 @@ The pipeline re-organizes one token vocabulary across three stages:
 ### Prerequisites
 
 - Python ≥ 3.10
+- A **C++17 compiler** and **CMake ≥ 3.16** — the core is a C++ library with pybind11 bindings and is compiled during `pip install` (see [C++ Core](#-c-core)). On Ubuntu: 
+  ```bash
+  sudo apt install build-essential cmake
+  ```
 - The core library depends on **NumPy** and [`small_gicp`](https://github.com/koide3/small_gicp) (used for the GICP-based 6-DoF pose refinement). The evaluation and visualization tools additionally use `open3d`, `scipy`, `pyyaml`, `tqdm`, `matplotlib`, and `pandas` (installed via extras below).
+- The C++ build depends on [Eigen](https://gitlab.com/libeigen/eigen) ≥ 3.3 and [nanoflann](https://github.com/jlblancoc/nanoflann), both header-only. CMake uses the system packages when they are installed, and otherwise clones them on the first build via `FetchContent` — which needs **git** and network access. Installing them up front keeps the build offline and a little faster:
+
+  ```bash
+  sudo apt install libeigen3-dev libnanoflann-dev
+  ```
+
+  **OpenMP** is optional — it is used for the parallel hot loops when found, and the same code path runs serially when it isn't.
 
 ### Installation
 
@@ -77,7 +96,63 @@ source inlier-env/bin/activate
 pip install -e ".[eval]"
 ```
 
-The `[eval]` extra installs everything the evaluation workflow needs — overlap-GT building, the HeLiPR evaluation, and the playback visualization. Install just the core library (no evaluation scripts) with `pip install -e .`
+The `[eval]` extra installs everything the evaluation workflow needs — overlap-GT building, the HeLiPR evaluation, and the playback visualization. Install just the core library (no evaluation scripts) with `pip install -e .`, and add `[test]` (`pip install -e ".[eval,test]"`) for the pytest suite.
+
+The install builds the C++ core: the project uses [`scikit-build-core`](https://github.com/scikit-build/scikit-build-core) as its build backend, which drives CMake and puts the compiled `inlier._inlier_pybind` module inside the package. The first build takes a couple of minutes (CMake configure, plus fetching Eigen/nanoflann if they are not installed system-wide); build artifacts land in `build/`. Editable installs are configured with `editable.rebuild = true`, so edits under [`cpp/`](cpp) or [`python/pybind/`](python/pybind) are recompiled automatically the next time `inlier` is imported — no reinstall needed (importing then prints a short CMake rebuild line).
+
+### Verifying the Build
+
+```bash
+python3 -c "import inlier; from inlier.core.InLiER import _BACKEND; print(inlier.__version__, _BACKEND)"
+# 0.1.0 cpp
+```
+
+`cpp` means the compiled extension loaded. `python` means it could not be imported and the pure-numpy reference implementation is being used instead — a warning is printed at import time in that case, with the underlying `ImportError`.
+
+## ⚡ C++ Core
+
+The encoder, matcher, and verifier are implemented in C++17 under [`cpp/inlier_core/`](cpp/inlier_core) and exposed through pybind11 bindings in [`python/pybind/`](python/pybind). The Python `InLiER` and `InLiER_Matcher` classes are thin wrappers over that core — identical public API, dataclasses, and verbose output; only the hot loops moved. The original pure-numpy implementation is kept verbatim under [`inlier/core/reference/`](inlier/core/reference), where it serves as both the ground truth for the equivalence test-suite and the automatic fallback when the extension is unavailable.
+
+### Backend Selection
+
+The C++ backend is used whenever it is importable. Set `INLIER_FORCE_PYTHON=1` to force the pure-numpy reference instead — useful for debugging, for A/B checks, and for running without a compiler:
+
+```bash
+INLIER_FORCE_PYTHON=1 python3 evaluation/evaluate_inlier_helipr.py ...
+```
+
+### Benchmarks
+
+Full HeLiPR evaluation, Roundabout01 (Ouster, DB = 2705) ← Roundabout03 (Aeva, Q = 2774), encoding from scratch with the descriptor cache disabled, `config/default.yaml`:
+
+| stage | c++ | python | speedup |
+|---|---:|---:|---:|
+| encoding / frame | 44.91 ms | 74.73 ms | 1.7× |
+| MINT / query | 2.89 ms | 4.78 ms | 1.7× |
+| BEAM / query | 34.67 ms | 86.58 ms | 2.5× |
+| verify / query | 3.29 ms | 130.40 ms | 39.6× |
+| **wall total** | **588.1 s** | **1252.7 s** | **2.1×** |
+
+The full table lives in [`results/bench_cpp_vs_py/comparison_cpp_vs_py.md`](results/bench_cpp_vs_py/comparison_cpp_vs_py.md) (single core) and is regenerated by running the whole evaluation twice, once per backend:
+
+```bash
+python3 scripts/benchmark_cpp_vs_py.py \
+    --config config/default.yaml \
+    --dataset /path/to/HeLiPR \
+    --db_sequence Roundabout01 --q_sequence Roundabout03 --pair O-Aeva \
+    --overlap_threshold 0.2 --max_pose_dist 10.0
+```
+
+### Equivalence Tests
+
+[`tests/`](tests) pins the C++ core against the numpy reference stage by stage — plane fitting, keypoints, shape PCA, tokens, the MINT/BEAM/verify stages, and an end-to-end pass:
+
+```bash
+pip install -e ".[eval,test]"
+pytest tests/ -v
+```
+
+A few matcher tests use a real cached descriptor set from `cache_inlier/` and are skipped if none is present — run the [evaluation](#running-the-evaluation) once to populate it.
 
 ## 🕹️ Run the Example
 
@@ -269,10 +344,6 @@ python3 evaluation/evaluate_inlier_generic.py \
 `--transform` defaults to `<db_path>/transform.txt` if present, and `--no_transform` disables it when both sequences already share a world frame. Outputs match the HeLiPR driver (`results_*.json`, `candidates_*.csv`, descriptor caches, trajectory plot) under `--output_dir`.
 
 ## 🔜 Coming Soon
-
-### C++ Implementation
-
-- ⚡ We are soon planning to release a C++ core with pybind11 bindings for improved encoding, matching and verification processing times.
 
 ### CLI Support
 
