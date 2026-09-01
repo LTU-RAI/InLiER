@@ -1,0 +1,268 @@
+"""The retrieval pipeline: MINT -> BEAM -> rerank -> verify -> GICP.
+
+One implementation of each stage, shared by every protocol and by
+``inlier run``.  Ported from ``evaluate_inlier_helipr.py`` (:363 ``compute_ranked_lists``,
+:388 ``compute_beam_ranked_lists``, :427 ``compute_rerank_ranked_lists``,
+:497 ``compute_verify_similarity_map``), where each existed twice.  Behaviour is
+unchanged.
+
+Evaluation vs deployment
+------------------------
+Every stage here is run in *evaluation* mode: candidates are scored with
+``topk=len(shortlist)`` and the stage ``score_threshold`` set to -2.0 by
+:func:`inlier.config.resolve`, so nothing is filtered out before the metrics
+see it.  A deployment run wants the opposite -- the configured ``topk`` and
+threshold, so the stage actually prunes.  That is the ``mode`` argument on
+``resolve``, not a difference in this code.
+
+Scoring note
+------------
+A verification that fails scores ``0.0``, not the ``-1.0`` sentinel the
+original docstring described -- the code never wrote -1.0.  Since the threshold
+sweep runs over non-negative scores and 0.0 is below every candidate threshold
+in practice, the two behave the same in the sweep; the docstring was simply
+describing an intent the implementation did not have.  The implemented
+behaviour is kept, because it is what produced the published numbers.
+"""
+
+from __future__ import annotations
+
+from typing import Any, Dict, List, Optional, Tuple
+
+import numpy as np
+
+from inlier.core.Dataclasses import (
+    InLiER_Keypoints,
+    InLiER_Tokens,
+    VerifyConfig,
+)
+
+RankedLists = Dict[int, List[int]]
+SimilarityMap = Dict[int, Dict[int, float]]
+ShiftsMap = Dict[int, Dict[int, int]]
+
+
+def _progress(iterable, desc: str, verbose: bool):
+    if not verbose:
+        return iterable
+    try:
+        import tqdm
+        return tqdm.tqdm(iterable, desc=desc)
+    except ImportError:
+        return iterable
+
+
+def minimal_keypoints(
+    p_aligned: np.ndarray,
+    p_sensor: Optional[np.ndarray] = None,
+    T_ground: Optional[np.ndarray] = None,
+) -> InLiER_Keypoints:
+    """Keypoints for verification / GICP.
+
+    With ``p_sensor`` and ``T_ground`` the keypoints carry real frame
+    information, so verification returns a pose in the sensor frame.  Without
+    them the legacy path assumes ``T_ground = I``, which makes the returned
+    pose ground-aligned rather than sensor-frame -- correct only if the cache
+    predates those fields.
+    """
+    if p_sensor is not None and T_ground is not None:
+        return InLiER_Keypoints(p=p_sensor, T_ground=T_ground)
+    return InLiER_Keypoints(p=p_aligned, T_ground=np.eye(4, dtype=np.float64))
+
+
+# ---------------------------------------------------------------------------
+#  Stage 1 -- MINT shortlist
+# ---------------------------------------------------------------------------
+
+def shortlist_stage(
+    matcher,
+    q_tokens: List[InLiER_Tokens],
+    n_db: int,
+    verbose: bool = True,
+    max_db_index: Optional[Dict[int, int]] = None,
+) -> Tuple[RankedLists, SimilarityMap]:
+    """Rank every database scan by MINT score, per query.
+
+    ``max_db_index`` optionally bounds the candidate pool per query (online
+    protocols exclude the recent past).  It filters after retrieval here; the
+    Phase-2 incremental matcher pushes the bound into the C++ loop so that
+    excluded neighbours cannot crowd out real candidates from the top-k.
+    """
+    ranked: RankedLists = {}
+    sims: SimilarityMap = {}
+
+    for j in _progress(range(len(q_tokens)), "  Stage-1 (MINT) retrieval", verbose):
+        out = matcher.shortlist(q_tokens[j], topk=n_db, verbose=False)
+        ids, scores = list(out.ids), list(out.scores)
+        if max_db_index is not None:
+            bound = max_db_index.get(j, n_db)
+            keep = [k for k, d in enumerate(ids) if d < bound]
+            ids = [ids[k] for k in keep]
+            scores = [scores[k] for k in keep]
+        ranked[j] = ids
+        sims[j] = {ids[k]: float(scores[k]) for k in range(len(ids))}
+
+    return ranked, sims
+
+
+# ---------------------------------------------------------------------------
+#  Stage 2 -- BEAM azimuth-shift rerank
+# ---------------------------------------------------------------------------
+
+def beam_stage(
+    matcher,
+    q_tokens: List[InLiER_Tokens],
+    ranked_s1: RankedLists,
+    stage1_topk: int,
+    verbose: bool = True,
+) -> Tuple[RankedLists, SimilarityMap, ShiftsMap]:
+    """Rerank the stage-1 shortlist by bitmask alignment, and estimate yaw.
+
+    Every shortlisted candidate is scored (``topk=len(shortlist)``) and nothing
+    is rank-filtered, so Recall@N and the PR sweep see the complete stage-2
+    ordering rather than a list truncated at the deployment ``topk``.
+    """
+    ranked: RankedLists = {}
+    sims: SimilarityMap = {}
+    shifts: ShiftsMap = {}
+
+    for j in _progress(range(len(q_tokens)), "  Stage-2 (BEAM) reranking", verbose):
+        shortlist = ranked_s1[j][:stage1_topk]
+        out = matcher.beam_score(q_tokens[j], shortlist, topk=len(shortlist), verbose=False)
+        ranked[j] = list(out.ids)
+        sims[j] = {sid: sc for sid, sc in zip(out.ids, out.scores)}
+        shifts[j] = {sid: sh for sid, sh in zip(out.ids, out.best_shifts)}
+
+    return ranked, sims, shifts
+
+
+# ---------------------------------------------------------------------------
+#  Rerank -- 4-D histogram scoring (off by default)
+# ---------------------------------------------------------------------------
+
+def rerank_stage(
+    matcher,
+    q_tokens: List[InLiER_Tokens],
+    ranked_prev: RankedLists,
+    shifts_prev: Optional[ShiftsMap],
+    input_topk: int,
+    verbose: bool = True,
+) -> Tuple[RankedLists, SimilarityMap, ShiftsMap]:
+    """Rerank with 4-D token-histogram scores, pre-aligned by the BEAM shift."""
+    ranked: RankedLists = {}
+    sims: SimilarityMap = {}
+    shifts: ShiftsMap = {}
+
+    for j in _progress(range(len(q_tokens)), "  Rerank", verbose):
+        shortlist = ranked_prev[j][:input_topk]
+        if not shortlist:
+            ranked[j], sims[j], shifts[j] = [], {}, {}
+            continue
+        prior = ([shifts_prev[j].get(sid, 0) for sid in shortlist]
+                 if shifts_prev is not None else [0] * len(shortlist))
+        out = matcher.rerank(q_tokens[j], shortlist, prior,
+                             topk=len(shortlist), verbose=False)
+        ranked[j] = list(out.ids)
+        sims[j] = {sid: sc for sid, sc in zip(out.ids, out.scores)}
+        shifts[j] = {sid: sh for sid, sh in zip(out.ids, out.best_shifts)}
+
+    return ranked, sims, shifts
+
+
+# ---------------------------------------------------------------------------
+#  Verify -- token-guided geometric verification
+# ---------------------------------------------------------------------------
+
+def verify_stage(
+    matcher,
+    q_tokens: List[InLiER_Tokens],
+    q_kp_aligned: List[np.ndarray],
+    db_tokens: List[InLiER_Tokens],
+    db_kp_aligned: List[np.ndarray],
+    ranked: RankedLists,
+    shifts_map: Optional[ShiftsMap],
+    verify_cfg: VerifyConfig,
+    top_v: int = 1,
+    q_kp_sensor: Optional[List[np.ndarray]] = None,
+    db_kp_sensor: Optional[List[np.ndarray]] = None,
+    q_T_grounds: Optional[List[np.ndarray]] = None,
+    db_T_grounds: Optional[List[np.ndarray]] = None,
+    verbose: bool = True,
+) -> Tuple[SimilarityMap, RankedLists, Dict[Tuple[int, int], Any]]:
+    """Verify the top-V candidates of every query.
+
+    Returns the per-pair score (``keypoint_inlier_ratio``, or ``0.0`` when
+    verification fails), the candidates in *retrieval* rank order -- the PR
+    sweep walks them in that order, falling through to the next candidate when
+    the first is below threshold -- and the raw ``VerifyOutput`` per pair, which
+    is what the pose-error metrics and the per-pair CSV are built from.
+
+    Every query is verified, including those with no GT positive: their false
+    positives are exactly what the confusion matrix needs to count.
+    """
+    n_queries = len(q_tokens)
+    sims: SimilarityMap = {}
+    rank_order: RankedLists = {}
+    outputs: Dict[Tuple[int, int], Any] = {}
+
+    have_sensor = (q_kp_sensor is not None and db_kp_sensor is not None
+                   and q_T_grounds is not None and db_T_grounds is not None)
+
+    desc = f"  Verify (top-{top_v})" if top_v > 1 else "  Verify (top-1)"
+    for j in _progress(range(n_queries), desc, verbose):
+        cands = ranked.get(j, [])
+        if not cands:
+            sims[j], rank_order[j] = {}, []
+            continue
+
+        to_verify = cands[:top_v]
+        q_kp = (minimal_keypoints(q_kp_aligned[j], q_kp_sensor[j], q_T_grounds[j])
+                if have_sensor else minimal_keypoints(q_kp_aligned[j]))
+        q_sims: Dict[int, float] = {}
+
+        for db_id in to_verify:
+            shift = 0
+            if shifts_map is not None and j in shifts_map:
+                shift = shifts_map[j].get(db_id, 0)
+            db_kp = (minimal_keypoints(db_kp_aligned[db_id], db_kp_sensor[db_id],
+                                       db_T_grounds[db_id])
+                     if have_sensor else minimal_keypoints(db_kp_aligned[db_id]))
+            out = matcher.verify(
+                q_tokens[j], q_kp, db_tokens[db_id], db_kp,
+                azimuth_shift=shift, config=verify_cfg, verbose=False,
+            )
+            q_sims[db_id] = out.keypoint_inlier_ratio if out.success else 0.0
+            outputs[(j, db_id)] = out
+
+        sims[j] = q_sims
+        rank_order[j] = to_verify
+
+    return sims, rank_order, outputs
+
+
+# ---------------------------------------------------------------------------
+#  Database construction
+# ---------------------------------------------------------------------------
+
+def build_matcher(resolved, db_tokens: List[InLiER_Tokens], verbose: bool = True):
+    """Populate and finalize a matcher from an encoded database.
+
+    ``rerank_config`` falls back to the dataclass default when reranking is
+    off: the matcher stores it unconditionally, and ``None`` would only fail
+    later, at a ``rerank()`` call that in that configuration never happens.
+    ``verify_config`` is deliberately not passed -- verification takes its
+    config per call, so binding one here would be a second source of truth.
+    """
+    from inlier.core.Dataclasses import RerankConfig
+    from inlier.core.InLiER_Matcher import InLiER_Matcher
+
+    matcher = InLiER_Matcher(
+        inlier_config=resolved.inlier,
+        shortlist_config=resolved.shortlist,
+        beam_score_config=resolved.beam,
+        rerank_config=resolved.rerank if resolved.rerank is not None else RerankConfig(),
+    )
+    for i, tok in enumerate(db_tokens):
+        matcher.add(i, tok)
+    matcher.finalize(verbose=verbose)
+    return matcher
