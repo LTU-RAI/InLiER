@@ -15,7 +15,7 @@ Expected dataset layout:
 """
 
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import List, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -107,6 +107,7 @@ class Generic_Handler:
         dataset_dir: Path,
         n_scans: int = 1,
         stride: Optional[int] = None,
+        select: Optional[Sequence[int]] = None,
     ) -> dict:
         """Load the dataset and accumulate scans into submaps.
 
@@ -120,6 +121,11 @@ class Generic_Handler:
             n_scans:     number of consecutive scans per submap (>= 1).
             stride:      step between consecutive submaps. Defaults to n_scans
                          (non-overlapping submaps).
+            select:      submap indices to build, or None for all of them.
+                         Only the scans those submaps need are read, which is
+                         what makes inspecting one submap out of hundreds
+                         cheap. The grouping is unaffected: indices always
+                         refer to positions in the full submap sequence.
 
         Returns:
             dict with keys shaped like HeLiPR_Handler.load_helipr:
@@ -136,6 +142,8 @@ class Generic_Handler:
         if stride < 1:
             raise ValueError(f"stride must be >= 1, got {stride}")
 
+        from inlier.eval.submaps import submap_windows
+
         poses = self.load_poses(dataset_dir)
         scan_files = self.list_scan_files(dataset_dir)
         if len(poses) != len(scan_files):
@@ -144,24 +152,34 @@ class Generic_Handler:
                 f"{len(poses)} poses vs {len(scan_files)} scans."
             )
 
-        N = len(poses)
-        # Match build_overlap_data.py._group_into_submaps: iterate starts at
-        # every `stride`-th index up to N-1 and keep a short trailing window
-        # when N is not divisible by stride. This ensures submap counts align
-        # with the overlap matrix dimensions.
-        starts = list(range(0, N, stride))
+        # The window rule is shared with build_overlap_data via
+        # submap_windows, so submap counts cannot drift from the overlap
+        # matrix's dimensions.
+        windows = submap_windows(len(poses), n_scans, stride)
+        if select is not None:
+            total = len(windows)
+            chosen = []
+            for i in select:
+                if not -total <= i < total:
+                    raise IndexError(
+                        f"submap index {i} out of range: {dataset_dir.name} has "
+                        f"{total} submaps at n_scans={n_scans}, stride={stride}")
+                chosen.append(windows[i])
+            windows = chosen
 
         submap_poses: List[np.ndarray] = []
         submap_points: List[np.ndarray] = []
 
         import tqdm  # lazy
-        iterator = tqdm.tqdm(starts, desc=f"  Building submaps (n={n_scans}, stride={stride})")
-        for s in iterator:
+        iterator = tqdm.tqdm(
+            windows, disable=not self.verbose,
+            desc=f"  Building submaps (n={n_scans}, stride={stride})")
+        for window in iterator:
+            s = window[0]
             ref_pose = poses[s]
             ref_inv = np.linalg.inv(ref_pose)
             window_pts: List[np.ndarray] = []
-            window_end = min(s + n_scans, N)
-            for k in range(s, window_end):
+            for k in window:
                 pts = self.load_scan_file(scan_files[k])
                 if pts.size == 0:
                     continue
@@ -180,9 +198,12 @@ class Generic_Handler:
             submap_poses.append(ref_pose)
 
         if self.verbose:
+            scope = ("" if select is None
+                     else f" (selected out of {len(submap_windows(len(poses), n_scans, stride))})")
             print(
-                f"  [Generic_Handler] built {len(submap_points)} submaps "
-                f"(n_scans={n_scans}, stride={stride}) from {N} scans in {dataset_dir.name}"
+                f"  [Generic_Handler] built {len(submap_points)} submap(s)"
+                f"{scope} (n_scans={n_scans}, stride={stride}) from "
+                f"{len(poses)} scans in {dataset_dir.name}"
             )
 
         zeros = [0.0] * len(submap_points)

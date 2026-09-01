@@ -274,6 +274,32 @@ the top height slices are empty, `z_max` is too high for the platform; if the
 BEAM panel is nearly all one colour, `N_r`/`N_a` are too coarse to separate
 structure.
 
+### Encoding submaps
+
+A bare scan path encodes one scan. The evaluation encodes accumulated
+**submaps** whenever `--n-db`/`--n-q` are above 1, so what you inspect should
+be built the same way — `--dataset` does that, merging each window of scans
+into its keyframe's frame using the poses:
+
+```bash
+inlier encode --dataset /data/campus --n-scans 10 --index 0 --viz
+inlier encode --dataset /data/campus --n-scans 10 --stride 5 --range 0:20 -o submaps/
+```
+
+Only the scans the selected submaps need are read, so inspecting one submap out
+of several hundred is cheap. `--index` accepts negatives (`-1` is the last
+submap) and resolves them before they reach filenames or provenance.
+
+`--n-scans` and `--stride` **must match what the overlap ground truth was built
+with** — the matrix is indexed by submap. The window rule is shared with the
+overlap builder ([`inlier/eval/submaps.py`](inlier/eval/submaps.py)) so the two
+cannot drift, and the values are written into the `.npz` alongside the token
+radices.
+
+> HeLiPR has no submap accumulation: it is evaluated scan by scan
+> (`HeLiPRSource` carries no `n_scans`/`stride`, and the published results are
+> one submap per scan). Point `inlier encode` straight at a `.bin`.
+
 > **Migrating from 0.2.x** — the scripts under `evaluation/` are now thin shims
 > that print the equivalent `inlier` command and forward. They are removed in
 > 0.4.0. Flag names are unchanged; both `--snake_case` and `--kebab-case`

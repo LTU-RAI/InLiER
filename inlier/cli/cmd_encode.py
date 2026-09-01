@@ -29,8 +29,9 @@ def register(subparsers, parent) -> None:
         description="Run the InLiER encoder on a scan or a directory of scans "
                     "and write keypoints + mixed-radix tokens to an .npz.",
     )
-    p.add_argument("input", type=str,
-                   help="a scan file (.pcd/.ply/.bin/.npy) or a directory of them")
+    p.add_argument("input", type=str, nargs="?",
+                   help="a scan file (.pcd/.ply/.bin/.npy) or a directory of "
+                        "them; omit when using --dataset")
     p.add_argument("-o", "--output", type=str, default=None,
                    help="output .npz (single scan) or output directory (many); "
                         "optional when only --viz is wanted")
@@ -39,6 +40,33 @@ def register(subparsers, parent) -> None:
                    help="override the config's preprocessing voxel size (m)")
     p.add_argument("--stats", action="store_true",
                    help="print per-scan keypoint/token counts and the descriptor size")
+
+    data = p.add_argument_group(
+        "dataset mode (submaps)",
+        "Encode accumulated submaps rather than single scans, using the poses "
+        "to merge each window into its keyframe's frame. This is what the "
+        "evaluation encodes when --n-db/--n-q are above 1, so it is what to "
+        "inspect if you want to see the descriptor the pipeline actually "
+        "scores.")
+    data.add_argument("--dataset", type=user_path, default=None, metavar="ROOT",
+                      help="dataset root, instead of a scan path")
+    data.add_argument("--dataset-type", "--dataset_type", dest="dataset_type",
+                      choices=("generic", "helipr"), default="generic",
+                      help="loader for --dataset (default: generic)")
+    data.add_argument("--n-scans", "--n_scans", dest="n_scans", type=int,
+                      default=1, metavar="N",
+                      help="scans per submap; must match the overlap ground "
+                           "truth's --n-db/--n-q (default: 1)")
+    data.add_argument("--stride", type=int, default=None, metavar="N",
+                      help="step between submaps (default: --n-scans, "
+                           "i.e. non-overlapping)")
+    which = data.add_mutually_exclusive_group()
+    which.add_argument("--index", type=int, default=None, metavar="I",
+                       help="which submap to encode (default: 0); "
+                            "negative counts from the end")
+    which.add_argument("--range", dest="submap_range", type=str, default=None,
+                       metavar="A:B",
+                       help="a half-open range of submaps, e.g. 0:10")
 
     viz = p.add_argument_group("visualization")
     viz.add_argument("--viz", action="store_true",
@@ -94,17 +122,128 @@ def _load_points(path: Path):
     return pts, n_dropped
 
 
-def _viz_target(save: Path, scan: Path, many: bool) -> Path:
-    """Where one scan's figure goes.
+def _parse_range(spec: str) -> range:
+    """``A:B`` -> ``range(A, B)``, half-open like a Python slice."""
+    parts = spec.split(":")
+    if len(parts) != 2:
+        raise ValueError(f"--range wants A:B, got {spec!r}")
+    try:
+        start, stop = (int(x) if x.strip() else None for x in parts)
+    except ValueError:
+        raise ValueError(f"--range wants integers, got {spec!r}") from None
+    start = 0 if start is None else start
+    if stop is None:
+        raise ValueError(f"--range needs an end, e.g. {start}:{start + 10}")
+    if stop <= start:
+        raise ValueError(f"--range is empty: {spec!r}")
+    return range(start, stop)
+
+
+def _submap_selection(args) -> list:
+    if args.submap_range:
+        return list(_parse_range(args.submap_range))
+    return [0 if args.index is None else args.index]
+
+
+def _load_submaps(args, quiet: bool):
+    """Build the requested submaps, reading only the scans they need.
+
+    Goes through ``Generic_Handler`` rather than accumulating here, so the
+    windows, the keyframe choice and the pose transform are the ones the
+    overlap ground truth and the evaluation use.
+    """
+    if args.dataset_type == "helipr":
+        # HeLiPRSource has no n_scans/stride, and cross_session reads them
+        # with a default of 1 -- HeLiPR is evaluated scan-by-scan.  There is
+        # no submap to accumulate, so point encode straight at the scan.
+        raise NotImplementedError(
+            "--dataset-type helipr has no submap accumulation: HeLiPR is "
+            "evaluated scan by scan. Pass the .bin path directly, e.g. "
+            "inlier encode <root>/<sequence>/Undistorted/<sensor>/<scan>.bin")
+
+    from inlier.eval.datasets.generic import Generic_Handler
+    from inlier.eval.submaps import submap_count
+
+    root = Path(args.dataset)
+    if not root.is_dir():
+        raise FileNotFoundError(f"--dataset {root} is not a directory")
+
+    handler = Generic_Handler(verbose=not quiet)
+    stride = args.n_scans if args.stride is None else args.stride
+    total = submap_count(len(handler.list_scan_files(root)), args.n_scans, stride)
+
+    # Resolve negatives here so the index that reaches the filenames, the
+    # figure title and the .npz provenance is the real one.
+    selection = []
+    for index in _submap_selection(args):
+        resolved = index + total if index < 0 else index
+        if not 0 <= resolved < total:
+            raise ValueError(
+                f"submap {index} out of range: {root.name} has {total} submaps "
+                f"at n_scans={args.n_scans}, stride={stride}")
+        selection.append(resolved)
+
+    if not quiet:
+        print(f"{root.name}: {total} submaps at n_scans={args.n_scans} "
+              f"stride={stride}; encoding {len(selection)}")
+
+    data = handler.load_generic(root, n_scans=args.n_scans, stride=stride,
+                                select=selection)
+    return data["point_clouds"], data["poses"], selection, stride
+
+
+def _viz_target(save: Path, stem: str, many: bool) -> Path:
+    """Where one item's figure goes.
 
     A path with an image suffix names a file; anything else is a directory,
     which is also the only form that makes sense for a batch.
     """
     if many or save.suffix.lower() not in VIZ_SUFFIXES:
         save.mkdir(parents=True, exist_ok=True)
-        return save / f"{scan.stem}.png"
+        return save / f"{stem}.png"
     save.parent.mkdir(parents=True, exist_ok=True)
     return save
+
+
+def _file_items(args, quiet: bool):
+    """Single scans, straight off disk: (label, stem, points, extra)."""
+    src = Path(args.input)
+    if src.is_dir():
+        scans = sorted(p for p in src.iterdir() if p.suffix.lower() in SCAN_SUFFIXES)
+        if not scans:
+            raise FileNotFoundError(
+                f"no scans in {src} (looked for {', '.join(SCAN_SUFFIXES)})")
+    else:
+        scans = [src]
+
+    items = []
+    for scan in scans:
+        points, n_dropped = _load_points(scan)
+        if n_dropped and not quiet:
+            print(f"{scan.name}: dropped {n_dropped:,} non-finite point(s)")
+        items.append((scan.name, scan.stem, points, {}))
+    return items, len(scans) > 1 or src.is_dir()
+
+
+def _submap_items(args, quiet: bool):
+    """Accumulated submaps: same shape, plus the provenance they need."""
+    clouds, poses, selection, stride = _load_submaps(args, quiet)
+    items = []
+    for index, cloud, pose in zip(selection, clouds, poses):
+        items.append((
+            f"submap {index}", f"submap_{index:05d}", cloud,
+            {
+                # A submap descriptor is only comparable to one built the same
+                # way; these are the fields OverlapProvenance treats as
+                # critical, so record them next to the tokens.
+                "n_scans": args.n_scans,
+                "stride": stride,
+                "submap_index": index,
+                "keyframe_pose": pose,
+                "dataset": str(args.dataset),
+            },
+        ))
+    return items, len(items) > 1
 
 
 def run(args: argparse.Namespace) -> int:
@@ -117,25 +256,34 @@ def run(args: argparse.Namespace) -> int:
     viz = args.viz or args.viz_save is not None
     if args.output is None and not viz:
         raise ValueError("nothing to do: pass -o/--output, --viz, or both.")
+    if (args.input is None) == (args.dataset is None):
+        raise ValueError(
+            "pass either a scan path or --dataset ROOT, not both and not "
+            "neither.")
+    if args.input is not None:
+        for flag, value in (("--n-scans", args.n_scans != 1),
+                            ("--stride", args.stride is not None),
+                            ("--index", args.index is not None),
+                            ("--range", args.submap_range is not None)):
+            if value:
+                raise ValueError(
+                    f"{flag} needs --dataset: submaps are built from poses, "
+                    f"which a bare scan path does not carry.")
 
     resolved = resolved_config(args, mode="deploy")
     voxel_size = args.voxel_size if args.voxel_size is not None else resolved.voxel_size
+    quiet = getattr(args, "quiet", False)
 
-    src = Path(args.input)
-    if src.is_dir():
-        scans = sorted(p for p in src.iterdir() if p.suffix.lower() in SCAN_SUFFIXES)
-        if not scans:
-            raise FileNotFoundError(
-                f"no scans in {src} (looked for {', '.join(SCAN_SUFFIXES)})")
+    if args.dataset is not None:
+        items, many = _submap_items(args, quiet)
     else:
-        scans = [src]
+        items, many = _file_items(args, quiet)
 
-    many = len(scans) > 1 or src.is_dir()
     if viz and many and args.viz_save is None:
         raise ValueError(
-            f"--viz on a directory would open a window per scan "
-            f"({len(scans)} of them); pass --viz-save DIR to write the figures "
-            f"instead, or point --viz at a single scan.")
+            f"--viz would open a window per item ({len(items)} of them); pass "
+            f"--viz-save DIR to write the figures instead, or narrow the "
+            f"selection.")
 
     if viz:
         # Choose the backend before pyplot is imported anywhere: saving must
@@ -156,18 +304,14 @@ def run(args: argparse.Namespace) -> int:
             out.parent.mkdir(parents=True, exist_ok=True)
 
     encoder = InLiER(resolved.inlier)
-    quiet = getattr(args, "quiet", False)
 
-    for scan in scans:
-        raw, n_dropped = _load_points(scan)
-        if n_dropped and not quiet:
-            print(f"{scan.name}: dropped {n_dropped:,} non-finite point(s)")
+    for label, stem, raw, extra in items:
         points = raw if voxel_size is None else voxel_downsample(raw, voxel_size)
         keypoints, tokens = encoder.encode(points, verbose=not quiet)
 
         target = None
         if out is not None:
-            target = (out / f"{scan.stem}.npz") if many else out
+            target = (out / f"{stem}.npz") if many else out
             np.savez_compressed(
                 target,
                 token_id=tokens.token_id,
@@ -179,28 +323,37 @@ def run(args: argparse.Namespace) -> int:
                 N_h=resolved.inlier.N_h, N_r=resolved.inlier.N_r,
                 N_s=resolved.inlier.N_s, N_a=resolved.inlier.N_a,
                 voxel_size=voxel_size,
+                **extra,
             )
 
         if args.stats or not quiet:
             n_bytes = tokens.token_id.nbytes
             written = f"  -> {target}" if target is not None else ""
-            print(f"{scan.name}: {len(points):>7,} pts -> {len(keypoints):>5} keypoints, "
+            print(f"{label}: {len(points):>7,} pts -> {len(keypoints):>5} keypoints, "
                   f"{len(tokens):>5} tokens ({n_bytes / 1024:.2f} KiB){written}")
 
         if viz:
             figure = encode_figure(points, keypoints, tokens, resolved.inlier,
-                                   title=str(scan))
+                                   title=_title(args, label, extra))
             if args.viz_save is not None:
-                figure_path = _viz_target(args.viz_save, scan, many)
+                figure_path = _viz_target(args.viz_save, stem, many)
                 figure.savefig(figure_path, dpi=args.viz_dpi,
                                bbox_inches="tight")
                 plt.close(figure)
                 if not quiet:
-                    print(f"{scan.name}: figure -> {figure_path}")
+                    print(f"{label}: figure -> {figure_path}")
             else:
                 plt.show()
                 plt.close(figure)
 
     if many and out is not None and not quiet:
-        print(f"\nencoded {len(scans)} scan(s) into {out}")
+        print(f"\nencoded {len(items)} item(s) into {out}")
     return 0
+
+
+def _title(args, label: str, extra: dict) -> str:
+    if not extra:
+        return str(Path(args.input) if Path(args.input).is_file()
+                   else Path(args.input) / label)
+    return (f"{Path(args.dataset).name}  {label}  "
+            f"(n_scans={extra['n_scans']}, stride={extra['stride']})")

@@ -367,3 +367,115 @@ def test_doctor_reports_a_generic_dataset_with_no_poses(capsys, generic_dataset)
                      "--dataset-type", "generic")
     assert code == 1
     assert "no poses_kitti.txt or poses_tum.txt" in out.out
+
+
+# --- submap accumulation ---------------------------------------------------
+# `inlier encode <scan>` encodes a single scan, but the evaluation encodes
+# accumulated submaps whenever --n-db/--n-q are above 1.  Dataset mode exists
+# so what you inspect is what the pipeline scores.
+
+@pytest.fixture
+def posed_dataset(tmp_path):
+    """7 scans on a straight line, 2 m apart, each a distinct point."""
+    root = tmp_path / "posed"
+    (root / "scans").mkdir(parents=True)
+    for i in range(7):
+        (root / "scans" / f"{i:06d}.pcd").write_text(
+            MINIMAL_PCD.replace("0 0 0\n1 0 0\n0 1 0", "0 0 0\n1 0 0\n0 1 1"))
+    (root / "poses_kitti.txt").write_text("\n".join(
+        f"1 0 0 {2 * i} 0 1 0 0 0 0 1 0" for i in range(7)))
+    return root
+
+
+def _encoded(path):
+    return np.load(path)
+
+
+def test_encode_builds_a_submap_from_several_scans(capsys, posed_dataset, tmp_path):
+    out = tmp_path / "submap.npz"
+    code, _ = _run(capsys, "encode", "--dataset", str(posed_dataset),
+                   "--n-scans", "3", "--index", "0", "-o", str(out), "--quiet")
+    assert code == 0
+    data = _encoded(out)
+    assert data["n_scans"] == 3
+    assert data["stride"] == 3
+    assert data["submap_index"] == 0
+    assert data["keyframe_pose"].shape == (4, 4)
+
+
+def test_a_submap_holds_more_points_than_its_keyframe_alone(
+        capsys, posed_dataset, tmp_path):
+    """The poses spread the scans out, so accumulation is not a no-op."""
+    single = tmp_path / "one.npz"
+    merged = tmp_path / "three.npz"
+    _run(capsys, "encode", "--dataset", str(posed_dataset), "--n-scans", "1",
+         "--index", "0", "-o", str(single), "--quiet", "--voxel-size", "0.1")
+    _run(capsys, "encode", "--dataset", str(posed_dataset), "--n-scans", "3",
+         "--index", "0", "-o", str(merged), "--quiet", "--voxel-size", "0.1")
+    assert len(_encoded(merged)["kp_sensor"]) >= len(_encoded(single)["kp_sensor"])
+
+
+def test_range_writes_one_npz_per_submap(capsys, posed_dataset, tmp_path):
+    out = tmp_path / "submaps"
+    code, _ = _run(capsys, "encode", "--dataset", str(posed_dataset),
+                   "--n-scans", "2", "--range", "0:3", "-o", str(out), "--quiet")
+    assert code == 0
+    assert sorted(p.name for p in out.glob("*.npz")) == [
+        "submap_00000.npz", "submap_00001.npz", "submap_00002.npz"]
+
+
+def test_a_negative_index_is_resolved_before_it_is_reported(
+        capsys, posed_dataset, tmp_path):
+    """7 scans at n=3 is 3 submaps, so -1 is submap 2 -- not 'submap -1'.
+
+    The resolved index is what reaches the label, the figure title and the
+    .npz provenance; leaving it negative would also produce a filename like
+    `submap_-0001.npz` in a multi-submap run.
+    """
+    out = tmp_path / "last.npz"
+    code, printed = _run(capsys, "encode", "--dataset", str(posed_dataset),
+                         "--n-scans", "3", "--index", "-1", "-o", str(out))
+    assert code == 0
+    assert _encoded(out)["submap_index"] == 2
+    assert "submap 2:" in printed.out
+    assert "submap -1" not in printed.out
+
+
+def test_an_out_of_range_submap_is_a_clean_error(capsys, posed_dataset, tmp_path):
+    code, out = _run(capsys, "encode", "--dataset", str(posed_dataset),
+                     "--n-scans", "3", "--index", "99",
+                     "-o", str(tmp_path / "x.npz"))
+    assert code == 1
+    assert "3 submaps" in out.err
+    assert "Traceback" not in out.err
+
+
+def test_helipr_says_why_it_has_no_submaps(capsys, helipr_dataset, tmp_path):
+    code, out = _run(capsys, "encode", "--dataset", str(helipr_dataset),
+                     "--dataset-type", "helipr", "--n-scans", "10",
+                     "-o", str(tmp_path / "x.npz"))
+    assert code == 1
+    assert "scan by scan" in out.err
+
+
+def test_submap_flags_need_a_dataset(capsys, scan_file, tmp_path):
+    code, out = _run(capsys, "encode", str(scan_file), "--n-scans", "10",
+                     "-o", str(tmp_path / "x.npz"))
+    assert code == 1
+    assert "--n-scans needs --dataset" in out.err
+
+
+def test_a_scan_path_and_a_dataset_are_mutually_exclusive(
+        capsys, scan_file, posed_dataset, tmp_path):
+    code, out = _run(capsys, "encode", str(scan_file), "--dataset",
+                     str(posed_dataset), "-o", str(tmp_path / "x.npz"))
+    assert code == 1
+    assert "not both and not neither" in out.err
+
+
+@pytest.mark.parametrize("spec", ["bad", "5:2", "1:", ":"])
+def test_a_malformed_range_is_rejected(capsys, posed_dataset, tmp_path, spec):
+    code, out = _run(capsys, "encode", "--dataset", str(posed_dataset),
+                     "--range", spec, "-o", str(tmp_path / "x.npz"))
+    assert code == 1
+    assert "--range" in out.err

@@ -48,6 +48,7 @@ import open3d as o3d
 import small_gicp
 
 from inlier.eval.datasets.helipr import HeLiPR_Handler
+from inlier.eval.submaps import submap_windows
 
 
 # ---------------------------------------------------------------------------
@@ -195,9 +196,9 @@ def _group_into_submaps(positions, poses, files, n, stride=None):
     The first scan of each submap is the keyframe: its pose's translation
     defines the submap position used by the distance pre-filter.
 
-    stride=None (default) means stride=n → non-overlapping submaps (original
-    behaviour). stride<n produces overlapping submaps; stride>n leaves gaps.
-    The final (trailing) window may be shorter than n when (K - start) < n.
+    The window rule itself lives in :func:`inlier.eval.submaps.submap_windows`,
+    shared with the dataset loaders -- the overlap matrix is indexed by submap,
+    so the two must not be able to drift apart.
 
     Returns
     -------
@@ -205,25 +206,10 @@ def _group_into_submaps(positions, poses, files, n, stride=None):
     submap_poses : list[list[np.ndarray]]   – per-scan poses for each submap
     submap_files : list[list[Path]]
     """
-    if stride is None:
-        stride = n
-    if stride < 1:
-        raise ValueError(f"stride must be >= 1, got {stride}")
-
-    if n <= 1 and stride == 1:
-        submap_poses = [[p] for p in poses]
-        submap_files = [[f] for f in files]
-        return np.asarray(positions), submap_poses, submap_files
-
-    K = len(files)
-    kf_positions = []
-    submap_poses = []
-    submap_files = []
-    for start in range(0, K, stride):
-        end = min(start + n, K)
-        kf_positions.append(positions[start])
-        submap_poses.append(list(poses[start:end]))
-        submap_files.append(list(files[start:end]))
+    windows = submap_windows(len(files), n, stride)
+    kf_positions = [positions[w[0]] for w in windows]
+    submap_poses = [[poses[i] for i in w] for w in windows]
+    submap_files = [[files[i] for i in w] for w in windows]
     return np.asarray(kf_positions), submap_poses, submap_files
 
 
