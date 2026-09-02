@@ -312,11 +312,51 @@ def run(spec: CrossSessionSpec) -> RunResult:
         shutil.copy2(spec.config_path, dest)
         written["config"] = dest
 
+    plot = _write_trajectory_plot(
+        spec, output_dir / f"trajectory_{tag}.png",
+        db_positions, q_positions, tp_edges, fp_edges,
+        conf_stage, chosen.threshold, tp, fp, fn, tn)
+    if plot is not None:
+        written["trajectory"] = plot
+
     _log(spec, f"\n  Results -> {written['results']}")
     return RunResult("cross_session", results, output_dir, written)
 
 
 # ---------------------------------------------------------------------------
+
+def _session_label(source) -> str:
+    """``sequence/sensor`` for HeLiPR, the folder name for anything else."""
+    described = source.describe()
+    name = described.get("sequence") or described.get("path", "")
+    name = Path(str(name)).name
+    sensor = described.get("sensor", "")
+    return f"{name}/{sensor}" if sensor else name
+
+
+def _write_trajectory_plot(spec, path, db_positions, q_positions,
+                           tp_edges, fp_edges, stage, threshold, tp, fp, fn, tn):
+    """Save the trajectory figure, or explain why it was skipped.
+
+    A missing matplotlib must not throw away a completed run: the figure is
+    the last thing written, after a job that can take tens of minutes, and
+    every number it illustrates is already safely in the JSON.
+    """
+    try:
+        from inlier.viz import write_trajectory_plot
+    except ImportError as exc:  # matplotlib lives in the [eval] extra
+        _log(spec, f"\n  Trajectory plot skipped ({exc}); "
+                   'install it with pip install "inlier[eval]"')
+        return None
+
+    title = (f"InLiER {stage}  {_session_label(spec.db_source)} → "
+             f"{_session_label(spec.q_source)}\n"
+             f"thr={threshold:.3f}  TP={tp}  FP={fp}  FN={fn}  TN={tn}")
+    written = write_trajectory_plot(
+        path, db_positions, q_positions, tp_edges, fp_edges, title)
+    _log(spec, f"  Trajectory plot -> {written}")
+    return written
+
 
 def _candidate_rows(conf_sims, conf_rank, ground_truth, matrix,
                     q_positions, db_positions, n_q, threshold) -> List[Dict[str, Any]]:

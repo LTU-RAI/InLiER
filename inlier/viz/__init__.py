@@ -15,7 +15,7 @@ from inlier.viz.descriptors import (  # noqa: F401
 )
 
 __all__ = ["Descriptors", "describe", "occupancy", "popcount",
-           "shape_class_labels", "encode_figure"]
+           "shape_class_labels", "encode_figure", "write_trajectory_plot"]
 
 
 def __getattr__(name: str):
@@ -23,4 +23,8 @@ def __getattr__(name: str):
         from inlier.viz.figures import encode_figure
 
         return encode_figure
+    if name == "write_trajectory_plot":
+        from inlier.viz.trajectory import write_trajectory_plot
+
+        return write_trajectory_plot
     raise AttributeError(f"module 'inlier.viz' has no attribute {name!r}")

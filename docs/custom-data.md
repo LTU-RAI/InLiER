@@ -76,4 +76,4 @@ inlier eval cross-session --dataset-type generic \
     --output-dir results/generic_dataset
 ```
 
-`--transform` defaults to `<db_path>/transform.txt` if present, and `--no-transform` disables it when both sequences already share a world frame. Outputs match the HeLiPR driver (`results_*.json`, `candidates_*.csv`, descriptor caches, trajectory plot) under `--output-dir`.
+`--transform` defaults to `<db_path>/transform.txt` if present, and `--no-transform` disables it when both sequences already share a world frame. Outputs match the HeLiPR driver: `results_*.json`, `candidates_*.csv`, `ranked_*.csv`, the per-pair verify poses and the trajectory plot land under `--output-dir`; the descriptor caches go to `--cache-dir`.

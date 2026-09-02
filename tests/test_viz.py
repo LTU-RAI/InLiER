@@ -152,3 +152,72 @@ def test_encode_figure_survives_a_token_keypoint_mismatch(encoded):
         assert any("not index-aligned" in t for t in texts)
     finally:
         plt.close(figure)
+
+
+# --- the evaluation's trajectory plot ---------------------------------------
+# Two sessions stacked in z, one edge per decision at the operating threshold.
+# The edge lists come from metrics.confusion, so the picture cannot disagree
+# with the counts in its own title.
+
+def _ring(radius, n=64, z=0.0):
+    t = np.linspace(0.0, 2 * np.pi, n)
+    return np.stack([radius * np.cos(t), radius * np.sin(t),
+                     np.full(n, z)], axis=1)
+
+
+def test_trajectory_plot_writes_a_png(tmp_path):
+    from inlier.viz import write_trajectory_plot
+
+    db, q = _ring(50.0), _ring(52.0)
+    out = write_trajectory_plot(
+        tmp_path / "nested" / "trajectory_run.png", db, q,
+        tp_edges=[(0, 0), (5, 5)], fp_edges=[(9, 40)],
+        title="InLiER Verify  A → B\nthr=0.300  TP=2  FP=1  FN=0  TN=0")
+
+    assert out.exists() and out.stat().st_size > 0
+    assert out.read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+def test_trajectory_plot_handles_a_run_with_no_edges(tmp_path):
+    """Nothing above threshold is a legitimate -- and informative -- run."""
+    from inlier.viz import write_trajectory_plot
+
+    out = write_trajectory_plot(tmp_path / "t.png", _ring(10.0), _ring(11.0),
+                                tp_edges=[], fp_edges=[], title="empty")
+    assert out.exists()
+
+
+def test_session_label_names_both_loaders():
+    from inlier.eval.protocols.cross_session import _session_label
+
+    class _Source:
+        def __init__(self, described):
+            self._described = described
+
+        def describe(self):
+            return self._described
+
+    helipr = _Source({"sequence": "Roundabout01", "sensor": "Ouster"})
+    generic = _Source({"path": "/data/campus_ouster"})
+    assert _session_label(helipr) == "Roundabout01/Ouster"
+    assert _session_label(generic) == "campus_ouster"
+
+
+def test_a_missing_matplotlib_does_not_lose_the_run(tmp_path, monkeypatch, capsys):
+    """The figure is written last, after a job that can take tens of minutes."""
+    import sys
+
+    from inlier.eval.protocols.cross_session import (
+        CrossSessionSpec, _write_trajectory_plot,
+    )
+
+    monkeypatch.setitem(sys.modules, "inlier.viz", None)
+    spec = CrossSessionSpec(resolved=None, db_source=None, q_source=None,
+                            overlap_path=tmp_path, output_dir=tmp_path)
+    written = _write_trajectory_plot(
+        spec, tmp_path / "t.png", _ring(1.0), _ring(2.0), [], [],
+        "Verify", 0.3, 1, 0, 0, 0)
+
+    assert written is None
+    assert not (tmp_path / "t.png").exists()
+    assert "Trajectory plot skipped" in capsys.readouterr().out
