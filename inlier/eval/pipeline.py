@@ -27,7 +27,8 @@ behaviour is kept, because it is what produced the published numbers.
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Tuple
+import time
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -79,30 +80,72 @@ def shortlist_stage(
     q_tokens: List[InLiER_Tokens],
     n_db: int,
     verbose: bool = True,
-    max_db_index: Optional[Dict[int, int]] = None,
 ) -> Tuple[RankedLists, SimilarityMap]:
-    """Rank every database scan by MINT score, per query.
-
-    ``max_db_index`` optionally bounds the candidate pool per query (online
-    protocols exclude the recent past).  It filters after retrieval here; the
-    Phase-2 incremental matcher pushes the bound into the C++ loop so that
-    excluded neighbours cannot crowd out real candidates from the top-k.
-    """
+    """Rank every database scan by MINT score, per query."""
     ranked: RankedLists = {}
     sims: SimilarityMap = {}
 
     for j in _progress(range(len(q_tokens)), "  Stage-1 (MINT) retrieval", verbose):
         out = matcher.shortlist(q_tokens[j], topk=n_db, verbose=False)
-        ids, scores = list(out.ids), list(out.scores)
-        if max_db_index is not None:
-            bound = max_db_index.get(j, n_db)
-            keep = [k for k, d in enumerate(ids) if d < bound]
-            ids = [ids[k] for k in keep]
-            scores = [scores[k] for k in keep]
-        ranked[j] = ids
-        sims[j] = {ids[k]: float(scores[k]) for k in range(len(ids))}
+        ranked[j] = list(out.ids)
+        sims[j] = {d: float(s) for d, s in zip(out.ids, out.scores)}
 
     return ranked, sims
+
+
+def online_shortlist_stage(
+    matcher,
+    tokens: List[InLiER_Tokens],
+    bounds: Sequence[int],
+    verbose: bool = True,
+    allowed: Optional[Callable[[int, int], np.ndarray]] = None,
+) -> Tuple[RankedLists, SimilarityMap, np.ndarray]:
+    """Stream one sequence: query the past, then append the frame.
+
+    ``bounds[t]`` is the exclusive database bound for frame ``t``.  The matcher
+    applies it inside its own scoring loop, so an excluded recent neighbour
+    cannot crowd a real loop closure out of the top-k -- filtering the results
+    afterwards would silently cost recall exactly where the window is tight.
+
+    ``allowed(t, bound) -> (bound,) bool`` narrows the pool further than a
+    prefix can express -- a search radius keeps scattered indices, not a
+    contiguous range, so the matcher's bound cannot carry it.  Applying it
+    after retrieval is nevertheless *exact* here, because the call above asks
+    for ``topk=bound``: the whole causal set is scored and returned, so nothing
+    a filter would have kept was ever dropped for want of a rank.
+
+    The returned per-frame wall clock covers the query *and* the insertion,
+    which is the whole cost an online system pays per frame.  It is only
+    meaningful because the database really does grow one frame at a time.
+    With ``allowed`` set it over-reports: the search still scans every causal
+    frame, where a deployed radius-limited system would not.
+    """
+    ranked: RankedLists = {}
+    sims: SimilarityMap = {}
+    latency_ms = np.zeros(len(tokens), dtype=np.float64)
+
+    matcher.reserve(len(tokens))
+    for t in _progress(range(len(tokens)), "  Online MINT retrieval", verbose):
+        bound = int(bounds[t])
+        t0 = time.perf_counter()
+        if bound > 0:
+            out = matcher.shortlist(tokens[t], topk=bound, verbose=False,
+                                    max_db_index=bound)
+            ids, scores = list(out.ids), list(out.scores)
+            if allowed is not None:
+                mask = allowed(t, bound)
+                keep = [i for i, d in enumerate(ids) if mask[d]]
+                ids = [ids[i] for i in keep]
+                scores = [scores[i] for i in keep]
+            ranked[t] = ids
+            sims[t] = {d: float(s) for d, s in zip(ids, scores)}
+        else:
+            ranked[t], sims[t] = [], {}
+        matcher.add(t, tokens[t])
+        matcher.finalize(verbose=False)
+        latency_ms[t] = (time.perf_counter() - t0) * 1e3
+
+    return ranked, sims, latency_ms
 
 
 # ---------------------------------------------------------------------------

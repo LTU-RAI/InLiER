@@ -241,6 +241,7 @@ class NoFilter:
     """Every database entry is a candidate (the cross-session default)."""
 
     name: str = "none"
+    uses_pose_oracle: bool = False
 
     def bound(self, q: int) -> Optional[int]:
         return None
@@ -249,7 +250,7 @@ class NoFilter:
         return True
 
     def describe(self):
-        return {"filter": self.name}
+        return {"filter": self.name, "uses_pose_oracle": False}
 
 
 @dataclass
@@ -261,6 +262,7 @@ class CausalFilter:
     arc_length: Optional[np.ndarray] = None
 
     name: str = "causal"
+    uses_pose_oracle: bool = False
 
     def bound(self, q: int) -> Optional[int]:
         return self.exclusion.cutoff(q, self.timestamps, self.arc_length)
@@ -269,7 +271,8 @@ class CausalFilter:
         return db < self.bound(q)
 
     def describe(self):
-        return {"filter": self.name, "exclusion": self.exclusion.describe()}
+        return {"filter": self.name, "uses_pose_oracle": False,
+                "exclusion": self.exclusion.describe()}
 
 
 @dataclass

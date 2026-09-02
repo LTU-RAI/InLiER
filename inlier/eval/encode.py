@@ -131,6 +131,16 @@ def _from_cache(path: Path, verbose: bool) -> EncodedSequence:
 def _save_cache(path: Path, enc: EncodedSequence, verbose: bool) -> None:
     tids = [t.token_id for t in enc.tokens]
     lengths = np.array([len(t) for t in tids], dtype=np.int64)
+    # Keypoints are stored flat and sliced back by the *token* offsets, so one
+    # keypoint per token is the format's invariant.  Violating it writes a file
+    # that reads back as ragged garbage and crashes in verification rather than
+    # here, so it is worth one pass to say which scan is wrong.
+    for i, (n_tok, kp) in enumerate(zip(lengths, enc.kp_aligned)):
+        if len(kp) != n_tok:
+            raise ValueError(
+                f"scan {i}: {len(kp)} keypoints for {n_tok} tokens. The "
+                f"descriptor cache slices keypoints by token offset and needs "
+                f"exactly one keypoint per token.")
     np.savez_compressed(
         path,
         positions=enc.positions,

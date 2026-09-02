@@ -21,6 +21,7 @@ def register(subparsers, parent) -> None:
     )
     sub = p.add_subparsers(dest="protocol", required=True)
     _register_cross_session(sub, parent)
+    _register_online_lcd(sub, parent)
 
 
 def _register_cross_session(sub, parent) -> None:
@@ -90,6 +91,142 @@ def _register_cross_session(sub, parent) -> None:
     out.add_argument("--threshold", "--pr-threshold", dest="threshold_value", type=float, default=None,
                      help="operating threshold; implies --threshold-policy fixed")
     p.set_defaults(func=run_cross_session)
+
+
+def _parse_exclusion(text: str):
+    """``frames=N`` / ``seconds=S`` / ``metres=M`` -> an Exclusion.
+
+    Spelled as a unit because the three are not interchangeable: 100 frames is
+    a different window at 1 Hz than at 10 Hz, and neither equals 50 m. Making
+    the unit part of the value stops a run from being silently mis-scoped.
+    """
+    from inlier.eval.gt import Exclusion
+
+    unit, _, value = text.partition("=")
+    unit = unit.strip().lower()
+    if not value or unit not in ("frames", "seconds", "metres"):
+        raise ValueError(
+            f"--exclusion takes frames=N, seconds=S or metres=M; got {text!r}")
+    try:
+        number = int(value) if unit == "frames" else float(value)
+    except ValueError:
+        raise ValueError(f"--exclusion {unit}= needs a number, got {value!r}")
+    return Exclusion(**{unit: number})
+
+
+def _register_online_lcd(sub, parent) -> None:
+    p = sub.add_parser(
+        "online-lcd", parents=[parent],
+        help="single-session online loop closure detection",
+        description=(
+            "Online loop closure detection: one session streams past, the "
+            "database grows as it goes, and every frame may only match frames "
+            "older than the exclusion window. Scored the way SLAM scores loop "
+            "closure -- F1max and max recall at 100% precision."
+        ),
+    )
+    p.add_argument("--dataset-type", dest="dataset_type",
+                   choices=("helipr", "generic"), default="helipr",
+                   help="which loader to use (default: helipr)")
+
+    helipr = p.add_argument_group("helipr options")
+    helipr.add_argument("--dataset", type=str, help="HeLiPR dataset root")
+    helipr.add_argument("--sequence", type=str, help="sequence name")
+    helipr.add_argument("--sensor", type=str, help="sensor, e.g. Ouster or Aeva")
+
+    generic = p.add_argument_group("generic options")
+    generic.add_argument("--path", type=str, help="sequence directory")
+    generic.add_argument("--n-scans", dest="n_scans", type=int, default=1,
+                         help="scans accumulated per submap (default: 1)")
+    generic.add_argument("--stride", type=int, default=None,
+                         help="step between submaps (default: --n-scans)")
+
+    gt = p.add_argument_group("ground truth")
+    gt.add_argument("--exclusion", type=str, default="frames=100",
+                    help="how much recent past a frame may not match: "
+                         "frames=N, seconds=S or metres=M (default: frames=100)")
+    gt.add_argument("--max-pose-dist", dest="max_pose_dist", type=float, default=10.0,
+                    help="maximum XY pose distance for a true revisit "
+                         "(default: 10.0)")
+    gt.add_argument("--search-radius", dest="search_radius", type=float, default=0.0,
+                    help="restrict the database to frames within this many "
+                         "metres of the query, as a SLAM local map would. "
+                         "0 searches the whole causal past (default: 0). "
+                         "WARNING: this measures against the ground-truth "
+                         "pose, so it is an oracle and inflates every metric; "
+                         "runs that use it are flagged in the results JSON")
+
+    out = p.add_argument_group("output")
+    out.add_argument("-o", "--output-dir", dest="output_dir", type=str,
+                     default="results")
+    out.add_argument("--cache-dir", dest="cache_dir", type=str,
+                     default="cache_inlier",
+                     help="descriptor cache; '' disables (default: cache_inlier)")
+    out.add_argument("--threshold-policy", dest="threshold_policy",
+                     choices=("max_precision", "max_f1", "fixed"),
+                     default="max_precision",
+                     help="how to pick the operating threshold (default: "
+                          "max_precision; f1_max and max-recall-at-100%%-precision "
+                          "are reported whichever is chosen)")
+    out.add_argument("--threshold", "--pr-threshold", dest="threshold_value",
+                     type=float, default=None,
+                     help="operating threshold; implies --threshold-policy fixed")
+    p.set_defaults(func=run_online_lcd)
+
+
+def run_online_lcd(args) -> int:
+    from inlier.cli._common import resolved_config
+    from inlier.eval import artifacts
+    from inlier.eval.datasets import GenericSource, HeLiPRSource
+    from inlier.eval.protocols.online_lcd import OnlineLCDSpec, run
+
+    resolved = resolved_config(args, mode="eval")
+    quiet = getattr(args, "quiet", False)
+    policy = args.threshold_policy
+    if args.threshold_value is not None:
+        policy = "fixed"
+    exclusion = _parse_exclusion(args.exclusion)
+
+    if args.dataset_type == "helipr":
+        _require(args, ["dataset", "sequence", "sensor"], "helipr")
+        source = HeLiPRSource(args.dataset, args.sequence, args.sensor,
+                              verbose=not quiet)
+        name, sensor = args.sequence, args.sensor
+    else:
+        _require(args, ["path"], "generic")
+        path = Path(args.path)
+        stride = args.stride if args.stride is not None else args.n_scans
+        source = GenericSource(path, args.n_scans, stride, verbose=not quiet)
+        name, sensor = path.name, "q"
+
+    exp_dir = artifacts.experiment_dirname(
+        name, sensor, name, "online",
+        resolved.voxel_size, resolved.inlier.cell_size,
+        resolved.inlier.N_h, resolved.inlier.N_r,
+        resolved.inlier.N_a, resolved.inlier.N_s)
+    tag = (f"{name}_{sensor}_lcd_{exclusion.unit}"
+           f"{getattr(exclusion, exclusion.unit)}_pd{args.max_pose_dist}m")
+    if args.search_radius > 0:
+        tag += f"_r{args.search_radius}m"
+
+    spec = OnlineLCDSpec(
+        resolved=resolved,
+        source=source,
+        exclusion=exclusion,
+        output_dir=Path(args.output_dir) / exp_dir,
+        max_pose_dist=args.max_pose_dist,
+        search_radius=args.search_radius,
+        cache_dir=Path(args.cache_dir) if args.cache_dir else None,
+        threshold_policy=policy,
+        threshold_value=args.threshold_value,
+        config_path=Path(args.config) if args.config else None,
+        verbose=not quiet,
+        tag=tag,
+    )
+    result = run(spec)
+    if not quiet:
+        print("\n" + result.summary())
+    return 0
 
 
 def _require(args, names, why):

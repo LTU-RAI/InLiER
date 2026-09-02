@@ -20,6 +20,19 @@ from typing import Any, Dict, List, Optional, Protocol, Sequence as Seq, runtime
 import numpy as np
 
 
+def arc_length(positions: np.ndarray) -> np.ndarray:
+    """(N,) cumulative XY distance travelled along a trajectory.
+
+    Free-standing because the online protocols have the positions but not the
+    :class:`Sequence` -- the descriptor cache stores poses, not point clouds.
+    """
+    pos = np.asarray(positions, dtype=np.float64)
+    if pos.shape[0] == 0:
+        return np.zeros(0, dtype=np.float64)
+    step = np.linalg.norm(np.diff(pos[:, :2], axis=0), axis=1)
+    return np.concatenate(([0.0], np.cumsum(step)))
+
+
 @dataclass
 class Sequence:
     """One loaded sequence: submaps with a global pose each.
@@ -61,11 +74,7 @@ class Sequence:
 
     def arc_length(self) -> np.ndarray:
         """(N,) cumulative distance travelled, for distance-based exclusion."""
-        pos = self.positions
-        if pos.shape[0] == 0:
-            return np.zeros(0, dtype=np.float64)
-        step = np.linalg.norm(np.diff(pos[:, :2], axis=0), axis=1)
-        return np.concatenate(([0.0], np.cumsum(step)))
+        return arc_length(self.positions)
 
     def transformed(self, T: Optional[np.ndarray]) -> "Sequence":
         """Copy with ``T`` applied to every pose (DB world frame -> Q world frame).

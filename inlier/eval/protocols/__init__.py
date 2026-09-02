@@ -12,11 +12,12 @@ Implemented:
     Full database, full query sequence, everything visible, overlap-matrix
     ground truth.  Offline.  This is the protocol behind the published results.
 
-Planned (see the plan in the repository):
-
 ``online_lcd``
     Single session; the database grows as the query streams and recent frames
-    are excluded.  Scored the way SLAM loop closure is scored.
+    are excluded.  Scored the way SLAM loop closure is scored -- F1max and
+    max recall at 100% precision.
+
+Planned (see the plan in the repository):
 
 ``online_global``
     Fixed prior map, streaming query, decision at a fixed threshold with no

@@ -14,7 +14,8 @@ inlier --help
 | `inlier config show` \| `dump` | print the effective configuration — after merging defaults, `--config`, and `--set` |
 | `inlier encode` | run just the encoder on a scan or a directory, writing keypoints + tokens, and optionally plotting them |
 | `inlier gt build` \| `validate` | build or sanity-check the overlap ground truth |
-| `inlier eval cross-session` | run the evaluation protocol |
+| `inlier eval cross-session` | offline: full database vs full query sequence |
+| `inlier eval online-lcd` | online: one session, a growing database, causal matching |
 | `inlier play` | replay a finished run as an animation |
 | `inlier bench cpp-vs-py` | time the C++ core against the numpy reference |
 
@@ -212,6 +213,68 @@ implies `fixed`. A parameter mismatch between the overlap matrix's
 is an error — `--no-strict-gt-check` downgrades it to a warning. The encoder
 and retrieval parameters come from `--config`; see
 [Configuration](configuration.md).
+
+### Online loop closure detection
+
+`inlier eval online-lcd` is the SLAM protocol: one session, no second sequence
+and no overlap matrix. The database grows as the session streams, and frame
+`t` may only match frames older than the exclusion window.
+
+```bash
+inlier eval online-lcd --dataset /data/HeLiPR \
+    --sequence Roundabout01 --sensor Ouster \
+    --exclusion frames=100 --max-pose-dist 10.0 -o results/lcd
+```
+
+| group | flags |
+|---|---|
+| loader | `--dataset-type {helipr,generic}` (default: `helipr`) |
+| helipr | `--dataset`, `--sequence`, `--sensor` |
+| generic | `--path`, `--n-scans`, `--stride` |
+| ground truth | `--exclusion` (default: `frames=100`), `--max-pose-dist` (default: 10.0), `--search-radius` (default: 0) |
+| output | as cross-session |
+
+`--exclusion` carries its unit — `frames=N`, `seconds=S` or `metres=M` — because
+the three are not interchangeable: 100 frames is a different window at 1 Hz
+than at 10 Hz, and neither is 50 m. The same window computes the ground-truth
+cutoff *and* the matcher's database bound, so the two cannot drift apart. The
+bound is applied inside the scoring loop rather than by discarding results
+afterwards, which is what stops an excluded neighbour from crowding a real
+loop closure out of the top-k.
+
+Ground truth is pose distance alone, since there is no overlap matrix for a
+single session. Results are reported the way loop closure is scored — `f1_max`
+and max recall at 100% precision, in a `loop_closure` block — alongside a
+`latency` block whose per-frame timings cover the query *and* the insertion,
+and are meaningful because the database really does grow one frame at a time.
+
+`seconds=` is the one unit that costs extra: the descriptor cache stores poses
+but not timestamps, so that window alone re-reads the sequence.
+
+#### `--search-radius`
+
+A SLAM front-end usually matches against a local map rather than every frame it
+has ever seen. `--search-radius R` reproduces that: candidates are restricted to
+database frames within `R` metres of the query. `0` — the default — searches the
+whole causal past.
+
+> ⚠️ **This is a geometric oracle.** The radius is measured against the query's
+> *ground-truth* pose, which a deployed system does not have, and it deletes
+> exactly the far-away distractors that make retrieval hard. Every metric goes
+> up. Runs that use it are flagged in the results JSON as
+> `candidate_filter.uses_pose_oracle: true`, so a number produced with a radius
+> can never be mistaken for one produced without.
+
+A radius smaller than `--max-pose-dist` is rejected: it would place real
+revisits outside the searchable database, and the resulting recall loss would
+read as a retrieval failure rather than the misconfiguration it is.
+
+The filter is applied to the retrieved ranking rather than inside the matcher's
+scoring loop — a radius keeps scattered indices, not a contiguous prefix, so the
+matcher's bound cannot express it. That is still *exact*, because the stage
+scores the entire causal set before anything is dropped; what it does mean is
+that the reported `latency` over-states a radius run, since the search itself
+still scans every causal frame.
 
 ## Replaying a Run
 

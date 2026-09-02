@@ -104,6 +104,63 @@ def read_results(path: Path) -> Dict[str, Any]:
     return data
 
 
+def candidate_rows(
+    conf_sims: Dict[int, Dict[int, float]],
+    conf_rank: Optional[Dict[int, List[int]]],
+    ground_truth: Dict[int, Any],
+    n_queries: int,
+    q_positions: Any,
+    db_positions: Any,
+    threshold: float,
+    overlap: Optional[Any] = None,
+) -> List[Dict[str, Any]]:
+    """One top-1 decision per query at the operating threshold.
+
+    Ordering follows :func:`inlier.eval.metrics.confusion` exactly so the CSV
+    cannot disagree with the confusion matrix it accompanies.
+
+    ``overlap`` is the scan-overlap matrix when the protocol has one; the
+    single-session protocols do not, and report 0.0 rather than inventing a
+    number.  For those, ``q_positions`` and ``db_positions`` are the same array.
+    """
+    rows: List[Dict[str, Any]] = []
+    for j in range(n_queries):
+        gt_set = set(ground_truth[j].tolist()) if ground_truth[j].size > 0 else set()
+        q_sims = conf_sims.get(j, {})
+        if conf_rank is not None and j in conf_rank:
+            ordered = [d for d in conf_rank[j] if d in q_sims]
+            if len(ordered) < len(q_sims):
+                seen = set(ordered)
+                ordered = ordered + sorted((d for d in q_sims if d not in seen),
+                                           key=lambda d: q_sims[d], reverse=True)
+            ranked_d = ordered
+        else:
+            ranked_d = sorted(q_sims, key=lambda d: q_sims[d], reverse=True)
+
+        top1 = next((d for d in ranked_d if q_sims[d] >= threshold), None)
+        if top1 is not None:
+            match_type = ("TP" if top1 in gt_set else "FP") if gt_set else "FP"
+            rows.append({
+                "query_idx": j,
+                "predicted_db_idx": top1,
+                "score": round(float(q_sims[top1]), 6),
+                "match_type": match_type,
+                "overlap": (0.0 if overlap is None
+                            else round(float(overlap[top1, j]), 6)),
+                "xy_distance_m": round(float(np.linalg.norm(
+                    q_positions[j, :2] - db_positions[top1, :2])), 3),
+                "has_gt_positive": bool(gt_set),
+            })
+        else:
+            rows.append({
+                "query_idx": j, "predicted_db_idx": -1, "score": 0.0,
+                "match_type": "FN" if gt_set else "TN",
+                "overlap": 0.0, "xy_distance_m": 0.0,
+                "has_gt_positive": bool(gt_set),
+            })
+    return rows
+
+
 def write_candidates(
     path: Path,
     rows: Sequence[Dict[str, Any]],

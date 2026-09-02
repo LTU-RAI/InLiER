@@ -585,3 +585,34 @@ def test_a_malformed_range_is_rejected(capsys, posed_dataset, tmp_path, spec):
                      "--range", spec, "-o", str(tmp_path / "x.npz"))
     assert code == 1
     assert "--range" in out.err
+
+
+## --- eval online-lcd dispatch ---
+
+
+def test_online_lcd_is_registered(capsys):
+    ## argparse exits from --help rather than returning through main()
+    with pytest.raises(SystemExit) as exc:
+        main(["eval", "online-lcd", "--help"])
+    assert exc.value.code == 0
+    out = capsys.readouterr().out
+    assert "--exclusion" in out
+    assert "loop closure" in out.lower()
+
+
+def test_online_lcd_requires_a_dataset(capsys):
+    code, out = _run(capsys, "eval", "online-lcd", "--sequence", "Roundabout01")
+    assert code == 1
+    assert "--dataset" in out.err
+    assert "Traceback" not in out.err
+
+
+@pytest.mark.parametrize("bad", ["100", "frames", "furlongs=3", "frames=abc"])
+def test_online_lcd_rejects_a_unitless_exclusion(capsys, tmp_path, bad):
+    """The window must name its unit; frames, seconds and metres differ."""
+    code, out = _run(capsys, "eval", "online-lcd", "--dataset", str(tmp_path),
+                     "--sequence", "S", "--sensor", "Ouster",
+                     "--exclusion", bad)
+    assert code == 1
+    assert "--exclusion" in out.err
+    assert "Traceback" not in out.err

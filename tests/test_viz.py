@@ -187,6 +187,66 @@ def test_trajectory_plot_handles_a_run_with_no_edges(tmp_path):
     assert out.exists()
 
 
+# --- the online protocol's single-session plot ------------------------------
+# One trajectory, z is the frame index, so a closure edge spans the frames
+# between leaving a place and returning to it.
+
+def test_time_trajectory_plot_writes_a_png(tmp_path):
+    from inlier.viz import write_time_trajectory_plot
+
+    out = write_time_trajectory_plot(
+        tmp_path / "nested" / "trajectory_lcd.png", _ring(50.0, n=64),
+        tp_edges=[(60, 2), (61, 3)], fp_edges=[(55, 30)],
+        title="InLiER online-LCD Verify  Roundabout01\n"
+              "thr=0.300  TP=2  FP=1  FN=0  TN=0")
+
+    assert out.exists() and out.stat().st_size > 0
+    assert out.read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+def test_time_trajectory_plot_handles_a_run_with_no_edges(tmp_path):
+    from inlier.viz import write_time_trajectory_plot
+
+    out = write_time_trajectory_plot(tmp_path / "t.png", _ring(10.0),
+                                     tp_edges=[], fp_edges=[], title="empty")
+    assert out.exists()
+
+
+def test_time_trajectory_edges_span_their_own_frames(tmp_path):
+    """z must come from the frame index, not a constant.
+
+    A closure between frame 60 and frame 2 has to be drawn as a line rising
+    58 frames; if z were fixed per trajectory the edge would be flat and the
+    figure would say nothing about when the revisit happened.
+    """
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from inlier.viz.trajectory import _draw_edges, _xyz
+
+    positions = _ring(50.0, n=64)
+    xyz = _xyz(positions, np.arange(len(positions), dtype=float))
+    fig = plt.figure()
+    ax = fig.add_subplot(111, projection="3d")
+    _draw_edges(ax, xyz, xyz, tp_edges=[(60, 2)], fp_edges=[])
+    zs = [line.get_data_3d()[2] for line in ax.lines]
+    plt.close(fig)
+
+    assert len(zs) == 1
+    assert list(zs[0]) == [60.0, 2.0]
+
+
+def test_time_trajectory_accepts_real_timestamps(tmp_path):
+    from inlier.viz import write_time_trajectory_plot
+
+    positions = _ring(50.0, n=64)
+    stamps = np.linspace(1000.0, 1063.0, len(positions))
+    out = write_time_trajectory_plot(
+        tmp_path / "ts.png", positions, tp_edges=[(60, 2)], fp_edges=[],
+        title="stamped", times=stamps, z_label="Time (s)")
+    assert out.exists()
+
+
 def test_session_label_names_both_loaders():
     from inlier.eval.protocols.cross_session import _session_label
 

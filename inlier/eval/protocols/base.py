@@ -32,6 +32,13 @@ class RunResult:
                 f"FN={conf.get('FN')} TN={conf.get('TN')}  "
                 f"P={conf.get('precision')} R={conf.get('recall')}"
             )
+        lc = self.results.get("loop_closure") or {}
+        if lc:
+            lines.append(
+                f"loop closure: R@1={lc.get('recall_at_1')}  "
+                f"F1max={lc.get('f1_max')}  "
+                f"max recall @ 100% precision="
+                f"{lc.get('max_recall_at_full_precision')}")
         for stage in ("stage1", "stage2", "combined", "verify"):
             block = self.results.get(stage)
             if block:
