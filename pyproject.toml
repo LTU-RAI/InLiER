@@ -4,7 +4,7 @@ build-backend = "scikit_build_core.build"
 
 [project]
 name = "inlier"
-version = "0.2.0"
+version = "1.0.0"
 description = "Intermediate LiDAR Encoding for Robust Heterogeneous Place Recognition"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -19,16 +19,22 @@ classifiers = [
     "Operating System :: POSIX :: Linux",
     "Topic :: Scientific/Engineering",
 ]
+# pyyaml is a core dependency, not an eval extra: the CLI and
+# inlier.config load YAML on every invocation.
 dependencies = [
     "numpy>=1.23",
+    "pyyaml",
     "small_gicp",
 ]
 
 [project.optional-dependencies]
 # Everything under evaluation/: overlap-GT building (scripts/), the HeLiPR
 # evaluation entry point, and the playback visualization.
-eval = ["pyyaml", "scipy", "open3d", "tqdm", "matplotlib", "pandas"]
+eval = ["scipy", "open3d", "tqdm", "matplotlib", "pandas"]
 test = ["pytest"]
+
+[project.scripts]
+inlier = "inlier.cli.main:main"
 
 [project.urls]
 Homepage = "https://github.com/LTU-RAI/InLiER"
@@ -37,14 +43,32 @@ Homepage = "https://github.com/LTU-RAI/InLiER"
 # matcher (inlier.core.InLiER_Matcher) wrap the C++ core in `cpp/inlier_core/`
 # through the pybind11 bindings in `python/pybind/`, with the pure-numpy
 # reference kept under `inlier/core/reference/` as the fallback. The ROS node
-# will be added later as a top-level `ros/` sibling. `evaluation/` and `config/`
-# are dev tooling; the dataset I/O layer lives in `evaluation/utils/` because
-# only the evaluation scripts use it — the core never imports it.
+# will be added later as a top-level `ros/` sibling.
+#
+# The CLI (`inlier.cli`), the configuration layer (`inlier.config`) and the
+# evaluation framework (`inlier.eval`, including the dataset I/O layer) all ship
+# inside the package, because only `inlier/` is packaged — anything left in
+# `evaluation/` would work from a git checkout and nowhere else. `evaluation/`
+# now holds only deprecation shims, removed in 1.1.0. The heavy evaluation
+# dependencies stay in the `[eval]` extra and are imported lazily, so
+# `import inlier` never needs them.
 [tool.scikit-build]
 cmake.version = ">=3.16"
 build-dir = "build/{wheel_tag}"
 wheel.packages = ["inlier"]
+# ship the packaged default config; inlier.config merges user files onto it
+sdist.include = ["inlier/config/default.yaml"]
+# Rebuild the extension on import, so editing cpp/ does not need a reinstall --
+# but quietly: verbose=true prints a cmake/ninja log ahead of every single
+# `inlier` invocation, which buries the command's own output.
 editable.rebuild = true
+editable.verbose = false
 
 [tool.scikit-build.cmake.define]
 CMAKE_BUILD_TYPE = "Release"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# The golden-run regression re-runs a full evaluation; deselect it with
+# `-m "not slow"` when you just want the fast suite.
+markers = ["slow: needs the HeLiPR dataset and a populated descriptor cache"]
