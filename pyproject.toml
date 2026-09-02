@@ -4,7 +4,7 @@ build-backend = "scikit_build_core.build"
 
 [project]
 name = "inlier"
-version = "0.2.0"
+version = "1.0.0"
 description = "Intermediate LiDAR Encoding for Robust Heterogeneous Place Recognition"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -49,7 +49,7 @@ Homepage = "https://github.com/LTU-RAI/InLiER"
 # evaluation framework (`inlier.eval`, including the dataset I/O layer) all ship
 # inside the package, because only `inlier/` is packaged — anything left in
 # `evaluation/` would work from a git checkout and nowhere else. `evaluation/`
-# now holds only deprecation shims, removed in 0.4.0. The heavy evaluation
+# now holds only deprecation shims, removed in 1.1.0. The heavy evaluation
 # dependencies stay in the `[eval]` extra and are imported lazily, so
 # `import inlier` never needs them.
 [tool.scikit-build]

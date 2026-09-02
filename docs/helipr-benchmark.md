@@ -39,7 +39,7 @@ inlier gt build \
     --voxel-size 0.5 --distance-threshold 100
 ```
 
-Alongside the matrix this writes a small `overlap_*.json` sidecar recording the parameters it was built with (`n_db`, `n_q`, `stride_db`, `stride_q`, voxel size, thresholds), and the evaluation **refuses to run** if they disagree with what it is about to assume — see [Overlap Ground Truth](custom-data.md#overlap-ground-truth).
+Alongside the matrix this writes a small `overlap_*.json` file recording the parameters it was built with (`n_db`, `n_q`, `stride_db`, `stride_q`, voxel size, thresholds), and the evaluation **refuses to run** if they disagree with what it is about to assume — see [Overlap Ground Truth](custom-data.md#overlap-ground-truth).
 
 - `--pairs` is `<DB sensor>-<Q sensor>`; here `O-Aeva` means the Roundabout01 **Ouster** scans are the database and the Roundabout03 **Aeva** scans are the query.
 - `--voxel-size` is the voxel size δ (m) used when computing per-voxel overlap between a DB/Q scan pair — smaller values are stricter (more voxels must actually coincide).

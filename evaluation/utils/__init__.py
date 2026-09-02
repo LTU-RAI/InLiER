@@ -6,7 +6,7 @@ ships only ``inlier/``, so anything left here would work from a git checkout
 and nowhere else.
 
 These re-exports keep ``from utils.HeLiPR_Handler import HeLiPR_Handler``
-working for the scripts under ``evaluation/`` until they are removed in 0.4.0.
+working for the scripts under ``evaluation/`` until they are removed in 1.1.0.
 New code should import from ``inlier.eval.datasets``.
 """
 

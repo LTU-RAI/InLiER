@@ -51,7 +51,7 @@ The install builds the C++ core: the project uses [`scikit-build-core`](https://
 
 ```bash
 python3 -c "import inlier; from inlier.core.InLiER import _BACKEND; print(inlier.__version__, _BACKEND)"
-# 0.2.0 cpp
+# 1.0.0 cpp
 ```
 
 `cpp` means the compiled extension loaded. `python` means it could not be imported and the pure-numpy reference implementation is being used instead — a warning is printed at import time in that case, with the underlying `ImportError`.

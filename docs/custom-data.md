@@ -60,7 +60,7 @@ inlier gt build \
 
 A stride of 1 keeps one submap per scan, so the overlap matrix stays at full resolution (`M_db × M_q` with `M ≈ number of scans`) at the cost of a longer build. Leaving `--stride-*` out defaults it to `n`, giving non-overlapping submaps and a ~10× smaller matrix.
 
-> ⚠️ `--n-db` / `--n-q` / `--stride-db` / `--stride-q` **must match what you later pass to** [`inlier eval cross-session`](../inlier/eval/protocols/cross_session.py) and to [`inlier encode --dataset`](cli.md#encoding-submaps) — the matrix is indexed by submap, so any difference misaligns the GT against the retrieval results. `inlier gt build` writes the values into an `overlap_*.json` sidecar and the evaluation refuses to run when they disagree.
+> ⚠️ `--n-db` / `--n-q` / `--stride-db` / `--stride-q` **must match what you later pass to** [`inlier eval cross-session`](../inlier/eval/protocols/cross_session.py) and to [`inlier encode --dataset`](cli.md#encoding-submaps) — the matrix is indexed by submap, so any difference misaligns the GT against the retrieval results. `inlier gt build` writes the values into an `overlap_*.json` file next to the matrix and the evaluation refuses to run when they disagree.
 
 ## Evaluation
 
@@ -87,6 +87,10 @@ inlier play \
     --run-dir results/generic_dataset/dbcamp-db-qcamp-q_vs0.5_cs1_nh10_nr20_na60_ns7 \
     --cache-dir cache_inlier
 ```
+
+<p align=center>
+  <img src="../figures/campus.gif" alt="InLiER loop-closure playback on the campus dataset" width="90%"/>
+</p>
 
 Everything it needs — the two dataset paths, `--n-db` / `--stride-db` and their query counterparts, the DB→Q transform, and the tag the filenames use — is read back out of the `results_*.json`. That is deliberate: retyping the submap accumulation would let a replay window the sequence differently from the run it is replaying. The only thing you may need to add is `--dataset`, if the folders have moved since the run.
 

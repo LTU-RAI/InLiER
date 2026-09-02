@@ -42,7 +42,25 @@ inlier doctor --dataset /data/campus --dataset-type generic   # scans/ + poses_k
 A dataset checked against the wrong layout is reported as a layout mismatch
 rather than as empty.
 
-## Inspecting a descriptor
+## Showing the Effective Configuration
+
+`inlier config` answers "what is actually going to run?" after the packaged
+defaults, `--config`, and every `--set` have been merged and validated:
+
+```bash
+inlier config show                                     # the resolved values
+inlier config show -c config/default.yaml --set stage1.topk=50
+inlier config dump > my_config.yaml                    # merged YAML, reusable
+```
+
+`show` prints the resolved dataclasses — including values derived from
+`voxel_size`, which no YAML file lists — and takes `--mode {eval,deploy}`:
+`eval` (the default) forces the stage score thresholds to `-2.0` so the PR
+sweep sees every candidate, `deploy` keeps the configured thresholds. `dump`
+prints the merged YAML with no banner, so its output is itself a valid
+`--config` file. See [Configuration](configuration.md).
+
+## Inspecting a Descriptor
 
 `inlier encode --viz` draws one page per scan: the cloud and its keypoints in
 the ground-aligned frame the encoder bins in, then the three matrices the
@@ -56,6 +74,13 @@ inlier encode scan.bin --viz-save scan.png         # write it instead
 inlier encode scans/ -o tokens/ --viz-save figs/   # one figure per scan
 ```
 
+<p align=center>
+  <img src="../figures/1690786976168420017.png" alt="inlier encode --viz page for a HeLiPR Ouster scan" width="80%"/>
+</p>
+
+<p align=center><sub>One HeLiPR Ouster scan (Bridge02): 48,938 points reduced to
+658 keypoints and their tokens, occupying 0.73% of the 84,000-cell token space.</sub></p>
+
 `--viz-save` forces a headless backend, so it works over ssh and in CI. It is
 required when the input is a directory, since `--viz` alone would open a window
 per scan. `-o/--output` is optional when you only want the figure.
@@ -66,7 +91,7 @@ BEAM panel is nearly all one colour, `N_r`/`N_a` are too coarse to separate
 structure. The parameters themselves are documented in
 [Configuration](configuration.md).
 
-## Encoding submaps
+## Encoding Submaps
 
 A bare scan path encodes one scan. The evaluation encodes accumulated
 **submaps** whenever `--n-db`/`--n-q` are above 1, so what you inspect should
@@ -78,23 +103,157 @@ inlier encode --dataset /data/campus --n-scans 10 --index 0 --viz
 inlier encode --dataset /data/campus --n-scans 10 --stride 5 --range 0:20 -o submaps/
 ```
 
+<p align=center>
+  <img src="../figures/submap_00000.png" alt="inlier encode --viz page for an accumulated campus submap" width="80%"/>
+</p>
+
+<p align=center><sub>The same page for a submap instead of a scan: 40 accumulated
+campus Ouster scans, 22,603 points reduced to 361 keypoints.</sub></p>
+
 Only the scans the selected submaps need are read, so inspecting one submap out
 of several hundred is cheap. `--index` accepts negatives (`-1` is the last
 submap) and resolves them before they reach filenames or provenance.
 
-`--n-scans` and `--stride` **must match what the overlap ground truth was built
-with** — see [Overlap Ground Truth](custom-data.md#overlap-ground-truth). The
-window rule is shared with the overlap builder
-([`inlier/eval/submaps.py`](../inlier/eval/submaps.py)) so the two cannot
-drift, and the values are written into the `.npz` alongside the token radices.
+`--n-scans` and `--stride` decide what a submap *is*: submap 3 at `--n-scans 10
+--stride 5` is a different cloud than submap 3 at `--n-scans 20`. Nothing here
+reads the overlap ground truth, so any values produce valid tokens — but to
+inspect what a run encoded, pass **the values that run used**, or the index and
+the figure refer to a submap it never saw. The window rule is shared with the
+evaluation and the overlap builder
+([`inlier/eval/submaps.py`](../inlier/eval/submaps.py)), so equal values always
+give the same submaps, and `encode` records them in the `.npz` alongside the
+token radices. (Matching the GT is the evaluation's own constraint — see
+[Overlap Ground Truth](custom-data.md#overlap-ground-truth).)
 
 > HeLiPR has no submap accumulation: it is evaluated scan by scan
 > (`HeLiPRSource` carries no `n_scans`/`stride`, and the published results are
 > one submap per scan). Point `inlier encode` straight at a `.bin`.
 
-## Migrating from 0.2.x
+## Building the Ground Truth
 
-The scripts under `evaluation/` are now thin shims that print the equivalent
-`inlier` command and forward. They are removed in 0.4.0. Every flag is now
-`--kebab-case`; the `--snake_case` spellings the 0.2.x README documented are
-still accepted everywhere.
+`inlier gt build` precomputes the pairwise overlap matrices that label true and
+false positives, plus an `overlap_*.json` file recording the parameters they
+were built with, which the evaluation checks before trusting a matrix:
+
+```bash
+inlier gt build --dataset /data/HeLiPR \
+    --db-sequence Roundabout01 --q-sequence Roundabout03 --pairs O-Aeva \
+    --output-dir overlap_matrices --voxel-size 0.5 --distance-threshold 100
+
+inlier gt build --dataset-type generic \
+    --db-path /data/campus/db --q-path /data/campus/q \
+    --n-db 40 --n-q 40 --voxel-size 0.5
+```
+
+| flag | what it does |
+|---|---|
+| `--dataset-type {helipr,generic}` | which layout to read (default: `helipr`) |
+| `--dataset`, `--db-sequence`, `--q-sequence`, `--pairs` | HeLiPR side; pairs are `O-O`, `Aeva-Aeva`, `O-V`, `O-Aeva`, `O-Avia` (default: all) |
+| `--db-path`, `--q-path`, `--transform` | generic side; the transform defaults to `<db-path>/transform.txt` when present |
+| `--n-db`, `--n-q`, `--stride-db`, `--stride-q` | submap accumulation; strides default to their `n` (non-overlapping) |
+| `--voxel-size`, `--distance-threshold`, `--max-range` | overlap voxel δ, max pose distance for a non-zero entry, point range cap |
+| `--icp`, `--icp-max-dist` | refine each DB submap against its local query cloud with GICP first |
+| `--block-size` | DB scans held in memory per block — lower it if the build runs out of RAM (default: 50) |
+| `--output-dir` | where the matrices and their `overlap_*.json` files go (default: `overlap_matrices`) |
+
+`inlier gt validate` reloads the poses and scans behind a finished matrix and
+plots the two trajectories, the overlap distribution, and example pairs, so a
+matrix is checked before it is trusted as ground truth:
+
+```bash
+inlier gt validate --dataset /data/HeLiPR \
+    --db-sequence Roundabout01 --q-sequence Roundabout03 --pair O-Aeva \
+    --overlap-dir overlap_matrices \
+    --voxel-size 0.5 --pose-dist-threshold 10.0 --overlap-threshold 0.2
+```
+
+<p align=center>
+  <img src="../figures/overlaps_example.png" alt="inlier gt validate figure for Roundabout01 (Ouster) vs Roundabout03 (Aeva)" width="80%"/>
+</p>
+
+<p align=center><sub>What <code>gt validate</code> draws: the two trajectories,
+the overlap distribution against the chosen threshold, and example pairs either
+side of it.</sub></p>
+
+It takes one `--pair` rather than a list, reads from `--overlap-dir`, and adds
+`--pose-dist-threshold` / `--overlap-threshold` (what counts as a positive in
+the plots) and `--seed` (which example pairs get drawn). Walkthroughs:
+[HeLiPR Benchmark](helipr-benchmark.md) and [Your Own Data](custom-data.md).
+
+## Running an Evaluation
+
+`inlier eval cross-session` is the protocol behind the published results: the
+whole database is visible to every query, and correctness comes from the
+overlap matrix.
+
+```bash
+inlier eval cross-session --dataset /data/HeLiPR \
+    --db-sequence Roundabout01 --q-sequence Roundabout03 --pair O-Aeva \
+    --overlap-dir overlap_matrices -o results/HeLiPR \
+    --overlap-threshold 0.2 --max-pose-dist 10.0
+
+inlier eval cross-session --dataset-type generic \
+    --db-path /data/campus/db --q-path /data/campus/q \
+    --overlap-file overlap_matrices/campus.txt --n-db 40 --n-q 40 \
+    -o results/campus
+```
+
+| group | flags |
+|---|---|
+| loader | `--dataset-type {helipr,generic}` (default: `helipr`) |
+| helipr | `--dataset`, `--db-sequence`, `--q-sequence`, `--pair`, `--overlap-dir` |
+| generic | `--db-path`, `--q-path`, `--overlap-file`, `--n-db`, `--n-q`, `--stride-db`, `--stride-q`, `--transform`, `--no-transform` |
+| ground truth | `--overlap-threshold` (default: 0.3), `--max-pose-dist` (default: 25.0, `0` disables), `--no-strict-gt-check` |
+| output | `-o/--output-dir` (default: `results`), `--cache-dir` (default: `cache_inlier`, `''` disables), `--threshold-policy {max_precision,max_f1,fixed}`, `--threshold` |
+
+`--threshold-policy` defaults to `max_precision`; `max_f1` is what most baselines report, and passing `--threshold`
+implies `fixed`. A parameter mismatch between the overlap matrix's
+`overlap_*.json` and the run
+is an error — `--no-strict-gt-check` downgrades it to a warning. The encoder
+and retrieval parameters come from `--config`; see
+[Configuration](configuration.md).
+
+## Replaying a Run
+
+`inlier play` animates a finished run — trajectories, loop closures, and the
+matched keypoints behind each one. Everything about the run's identity
+(sequences, sensors, thresholds, token grid) is read back out of its
+`results_*.json`, so the command takes the run directory and little else:
+
+```bash
+inlier play --run-dir results/HeLiPR/dbR01-O-qR03-Aeva_vs0.5_cs1_nh10_nr20_na60_ns7
+inlier play --run-dir results/campus/... --record loops.mp4 --fps 15 --dpi 300
+```
+
+<p align=center>
+  <img src="../figures/helipr.gif" alt="inlier play replaying a HeLiPR run" width="80%"/>
+</p>
+
+<p align=center><sub>Roundabout01 (Ouster) against Roundabout03 (Aeva), replayed
+from its run directory: the query walks the trajectory, accepted loop closures
+draw to their database match, and the matched keypoints are shown per closure.</sub></p>
+
+`SPACE` plays and pauses, the arrow keys step. `--record` renders every
+keyframe to an MP4 and exits (headless, so it works over ssh); `--dataset`
+points at the scans if they moved since the run; `--results-json` pins one
+result file when a directory holds several; `--candidates-csv`,
+`--verify-csv`, `--db-cache`, `--q-cache` skip auto-discovery. Apart from
+`--record`, playback writes nothing.
+
+## Benchmarking the Backends
+
+`inlier bench cpp-vs-py` runs the *same* evaluation once per backend with the
+descriptor cache disabled — so the encoder is actually exercised — and
+tabulates the per-stage timings:
+
+```bash
+inlier bench cpp-vs-py --dataset /data/HeLiPR \
+    --db-sequence Roundabout01 --q-sequence Roundabout03 --pair O-Aeva
+```
+
+The evaluation arguments are forwarded verbatim, so benchmarking a run is the
+same command line as the run itself. `--backends` chooses which to time
+(default: `cpp,python`) and `--out-base` where the results go (default:
+`results/bench_cpp_vs_py`). Each backend needs its own process, since
+`INLIER_FORCE_PYTHON` is read at import, so a global `--backend` is ignored
+here with a warning. Published numbers: [C++ Core](cpp-core.md).

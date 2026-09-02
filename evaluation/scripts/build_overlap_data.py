@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""DEPRECATED -- use ``inlier gt build``.  Removed in 0.4.0.
+"""DEPRECATED -- use ``inlier gt build``.  Removed in 1.1.0.
 
 Moved to ``inlier.eval.overlap_build``.  Every flag is unchanged; the CLI also
 writes a provenance sidecar next to the matrix so the evaluation can verify it

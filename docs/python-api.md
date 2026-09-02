@@ -2,6 +2,13 @@
 
 ← back to the [README](../README.md)
 
+InLiER is usable as a plain library — no dataset loader, no CLI, nothing on
+disk. You hand `InLiER.encode()` an `(N, 3)` float32 point cloud in the sensor
+frame and get back keypoints and their tokens; `InLiER_Matcher` holds the
+database and runs the three stages over those tokens: MINT for a
+rotation-invariant shortlist, BEAM for yaw estimation and reranking, and
+Verify for the 6-DoF pose. The example below walks through all of it once.
+
 ```python
 import numpy as np
 from inlier import InLiER, InLiER_Matcher, InLiER_Config, VerifyConfig

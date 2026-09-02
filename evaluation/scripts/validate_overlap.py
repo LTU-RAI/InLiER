@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""DEPRECATED -- use ``inlier gt validate``.  Removed in 0.4.0.
+"""DEPRECATED -- use ``inlier gt validate``.  Removed in 1.1.0.
 
 Moved to ``inlier.eval.overlap_validate``.
 """

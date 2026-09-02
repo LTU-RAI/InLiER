@@ -5,7 +5,7 @@ keeps the original numpy implementation as the ground truth its replacement is
 tested against.  This file does the same for the metrics, which were lifted out
 of ``evaluation/evaluate_inlier_helipr.py``.  The reference bodies below are
 verbatim copies of those functions, kept here so the test survives the removal
-of the old scripts in 0.4.0.
+of the old scripts in 1.1.0.
 
 The generated cases deliberately include the awkward shapes: a ``rank_order``
 that lists candidates ``similarity_map`` never scored, and a ``similarity_map``

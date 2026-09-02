@@ -3,7 +3,7 @@
 
 Same protocol as the HeLiPR driver, different loader; both now share
 ``inlier/eval/protocols/cross_session.py``.  This shim translates the old flags
-and forwards.  It is removed in 0.4.0.
+and forwards.  It is removed in 1.1.0.
 """
 
 import sys
@@ -50,7 +50,7 @@ def main():
     new_argv, dropped = _translate(sys.argv[1:])
     print(
         "DEPRECATED: evaluation/evaluate_inlier_generic.py will be removed in "
-        "InLiER 0.4.0.\n"
+        "InLiER 1.1.0.\n"
         "Use the CLI instead:\n\n"
         "    inlier " + " ".join(new_argv) + "\n",
         file=sys.stderr,

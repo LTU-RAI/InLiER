@@ -6,7 +6,7 @@ The evaluation moved into the installed package so that it is reachable after
 and generic drivers -- which were ~90% the same file -- share one
 implementation.  See ``inlier/eval/protocols/cross_session.py``.
 
-This shim translates the old flags and forwards.  It is removed in 0.4.0.
+This shim translates the old flags and forwards.  It is removed in 1.1.0.
 """
 
 import sys
@@ -33,7 +33,7 @@ def main():
     new_argv = _translate(sys.argv[1:])
     print(
         "DEPRECATED: evaluation/evaluate_inlier_helipr.py will be removed in "
-        "InLiER 0.4.0.\n"
+        "InLiER 1.1.0.\n"
         "Use the CLI instead:\n\n"
         "    inlier " + " ".join(new_argv) + "\n\n"
         "Forwarding...\n",

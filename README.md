@@ -36,6 +36,7 @@ The pipeline re-organizes one token vocabulary across three stages:
 
 ## 📰 Latest News
 
+- **[2026-09-02]** 🏷️ **v1.0.0** — the `inlier` command line (`doctor`, `config`, `encode`, `gt`, `eval`, `play`, `bench`), a layered YAML configuration, and a full documentation set under [`docs/`](docs).
 - **[2026-09-01]** ⚡ The **C++ core** is out — the encoder, MINT/BEAM matcher, and token-guided verification are now C++17 with pybind11 bindings, behind the same Python API. Up to **39× faster verification** and **2.1× end-to-end** on the HeLiPR benchmark; see [C++ Core](docs/cpp-core.md).
 - **[2026-08-13]** 📄 The **published RA-L version** is out — IEEE Robotics and Automation Letters, vol. 11, no. 10, pp. 11275–11282, [10.1109/LRA.2026.3723737](https://doi.org/10.1109/LRA.2026.3723737).
 - **[2026-07-21]** 🎉 **Preprint and code released** — the paper is on [arXiv](https://arxiv.org/abs/2607.16862) and the Python implementation is public.
@@ -51,7 +52,7 @@ cd InLiER
 pip install -e ".[eval]"
 
 python3 -c "import inlier; from inlier.core.InLiER import _BACKEND; print(inlier.__version__, _BACKEND)"
-# 0.2.0 cpp
+# 1.0.0 cpp
 ```
 
 ### As a library
@@ -86,7 +87,7 @@ if result.success:
 
 ## 🕹️ Reproducing the HeLiPR Evaluation
 
-The paper's main experiment: Roundabout01 (Ouster OS2-128, database) ← Roundabout03 (Aeva Aeries II, query) — spinning against solid-state. Point `--dataset` at a HeLiPR root whose `Undistorted/` folders are populated ([how](docs/helipr-benchmark.md#dataset-setup)), then:
+Example of one of the paper's main experiments: Roundabout01 (Ouster OS2-128, database) ← Roundabout03 (Aeva Aeries II, query) — spinning against solid-state. Point `--dataset` at a HeLiPR root whose `Undistorted/` folders are populated ([how](docs/helipr-benchmark.md#dataset-setup)), then:
 
 ```bash
 # 0. sanity-check the backend, dependencies, and dataset layout
@@ -109,7 +110,13 @@ inlier gt validate \
     --pair O-Aeva \
     --overlap-dir overlap_matrices \
     --voxel-size 0.5 --pose-dist-threshold 10.0 --overlap-threshold 0.2
+```
 
+<p align=center>
+  <img src="figures/overlaps_example.png" alt="Overlap example" width="80%"/>
+</p>
+
+```bash
 # 3. run the evaluation
 inlier eval cross-session \
     --config config/default.yaml \
@@ -139,16 +146,17 @@ Step 3 writes the Recall/PR-AUC metrics (`results_*.json`), the loop-closure can
 | [Installation](docs/installation.md) | prerequisites, conda/venv setup, extras, verifying the build |
 | [Python API](docs/python-api.md) | using InLiER as a library |
 | [Command Line](docs/cli.md) | every `inlier` subcommand, descriptor inspection, submaps |
-| [Configuration](docs/configuration.md) | config layering and the encoder parameter table |
+| [Configuration](docs/configuration.md) | config layering, every `--set` key, and the parameter tables |
 | [C++ Core](docs/cpp-core.md) | backend selection, benchmarks, equivalence tests |
 | [HeLiPR Benchmark](docs/helipr-benchmark.md) | reproduce the paper's results end to end |
 | [Your Own Data](docs/custom-data.md) | generic dataset layout, overlap GT, evaluation |
-| [Roadmap](docs/roadmap.md) | evaluation protocols and ROS2 support in progress |
+| [Roadmap](docs/roadmap.md) | evaluation protocols, ROS2 support, and front-end integrations in progress |
 
 ## 🔜 Roadmap
 
 - 🔁 More evaluation protocols — `online-lcd`, `online-global`, `multi-session`, and a GT-free `inlier run`.
 - 🤖 ROS2 nodes for front-end agnostic loop closures, with a GTSAM based back-end.
+- 🧩 Planned integrations with KISS-ICP, FAST-LIO2 and GLIM, so InLiER can plug into the odometry front-end you already run.
 
 Details in [docs/roadmap.md](docs/roadmap.md).
 
