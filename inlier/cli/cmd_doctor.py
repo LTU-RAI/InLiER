@@ -38,10 +38,10 @@ def register(subparsers, parent) -> None:
     )
     p.add_argument("--dataset", type=str, default=None,
                    help="dataset root to check, against --dataset-type's layout")
-    p.add_argument("--dataset-type", "--dataset_type", dest="dataset_type",
+    p.add_argument("--dataset-type", dest="dataset_type",
                    choices=("helipr", "generic"), default="helipr",
                    help="layout to check --dataset against (default: helipr)")
-    p.add_argument("--overlap-dir", "--overlap_dir", dest="overlap_dir",
+    p.add_argument("--overlap-dir", dest="overlap_dir",
                    type=str, default="overlap_matrices",
                    help="directory of overlap matrices to check for sidecars")
     p.set_defaults(func=run)

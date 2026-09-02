@@ -35,7 +35,7 @@ def register(subparsers, parent) -> None:
     p.add_argument("-o", "--output", type=str, default=None,
                    help="output .npz (single scan) or output directory (many); "
                         "optional when only --viz is wanted")
-    p.add_argument("--voxel-size", "--voxel_size", dest="voxel_size",
+    p.add_argument("--voxel-size", dest="voxel_size",
                    type=float, default=None,
                    help="override the config's preprocessing voxel size (m)")
     p.add_argument("--stats", action="store_true",
@@ -50,10 +50,10 @@ def register(subparsers, parent) -> None:
         "scores.")
     data.add_argument("--dataset", type=user_path, default=None, metavar="ROOT",
                       help="dataset root, instead of a scan path")
-    data.add_argument("--dataset-type", "--dataset_type", dest="dataset_type",
+    data.add_argument("--dataset-type", dest="dataset_type",
                       choices=("generic", "helipr"), default="generic",
                       help="loader for --dataset (default: generic)")
-    data.add_argument("--n-scans", "--n_scans", dest="n_scans", type=int,
+    data.add_argument("--n-scans", dest="n_scans", type=int,
                       default=1, metavar="N",
                       help="scans per submap; must match the overlap ground "
                            "truth's --n-db/--n-q (default: 1)")
@@ -72,12 +72,12 @@ def register(subparsers, parent) -> None:
     viz.add_argument("--viz", action="store_true",
                      help="plot the scan, its keypoints and the MINT/BEAM "
                           "descriptors")
-    viz.add_argument("--viz-save", "--viz_save", dest="viz_save",
+    viz.add_argument("--viz-save", dest="viz_save",
                      type=user_path, default=None, metavar="PATH",
                      help="write the figure(s) to PATH instead of opening a "
                           "window (implies --viz): a file for one scan, a "
                           "directory for many")
-    viz.add_argument("--viz-dpi", "--viz_dpi", dest="viz_dpi", type=int,
+    viz.add_argument("--viz-dpi", dest="viz_dpi", type=int,
                      default=150, help="figure resolution when saving (150)")
     p.set_defaults(func=run)
 

@@ -141,8 +141,8 @@ The full table lives in [`results/bench_cpp_vs_py/comparison_cpp_vs_py.md`](resu
 inlier bench cpp-vs-py \
     --config config/default.yaml \
     --dataset /path/to/HeLiPR \
-    --db_sequence Roundabout01 --q_sequence Roundabout03 --pair O-Aeva \
-    --overlap_threshold 0.2 --max_pose_dist 10.0
+    --db-sequence Roundabout01 --q-sequence Roundabout03 --pair O-Aeva \
+    --overlap-threshold 0.2 --max-pose-dist 10.0
 ```
 
 ### Equivalence Tests
@@ -302,8 +302,8 @@ radices.
 
 > **Migrating from 0.2.x** — the scripts under `evaluation/` are now thin shims
 > that print the equivalent `inlier` command and forward. They are removed in
-> 0.4.0. Flag names are unchanged; both `--snake_case` and `--kebab-case`
-> spellings are accepted.
+> 0.4.0. Every flag is now `--kebab-case`; the `--snake_case` spellings the
+> 0.2.x README documented are still accepted everywhere.
 
 ## 🕹️ Run the Example
 
@@ -334,12 +334,12 @@ Precompute the pairwise scan-overlap matrices used to label true/false positives
 
 ```bash
 inlier gt build \
-    --dataset_type helipr \
+    --dataset-type helipr \
     --dataset /path/to/HeLiPR \
-    --db_sequence Roundabout01 --q_sequence Roundabout03 \
+    --db-sequence Roundabout01 --q-sequence Roundabout03 \
     --pairs O-Aeva \
-    --output_dir overlap_matrices \
-    --voxel_size 0.5 --distance_threshold 100
+    --output-dir overlap_matrices \
+    --voxel-size 0.5 --distance-threshold 100
 ```
 
 Alongside the matrix this writes a small `overlap_*.json` sidecar recording the
@@ -348,8 +348,8 @@ thresholds). The evaluation reads it back and **refuses to run** if they disagre
 with what it is about to assume — see [Overlap Ground Truth](#overlap-ground-truth).
 
 - `--pairs` is `<DB sensor>-<Q sensor>`; here `O-Aeva` means the Roundabout01 **Ouster** scans are the database and the Roundabout03 **Aeva** scans are the query.
-- `--voxel_size` is the voxel size δ (m) used when computing per-voxel overlap between a DB/Q scan pair — smaller values are stricter (more voxels must actually coincide).
-- `--distance_threshold` caps the pose-to-pose distance (m) beyond which a DB/Q pair is assumed non-overlapping and skipped, without spending time voxelizing it.
+- `--voxel-size` is the voxel size δ (m) used when computing per-voxel overlap between a DB/Q scan pair — smaller values are stricter (more voxels must actually coincide).
+- `--distance-threshold` caps the pose-to-pose distance (m) beyond which a DB/Q pair is assumed non-overlapping and skipped, without spending time voxelizing it.
 
 ### Validate Calculated Overlaps
 
@@ -357,15 +357,15 @@ Sanity-check a precomputed overlap matrix before trusting it as GT with [`inlier
 
 ```bash
 inlier gt validate \
-    --dataset_type helipr \
+    --dataset-type helipr \
     --dataset /path/to/HeLiPR \
-    --db_sequence Roundabout01 --q_sequence Roundabout03 \
+    --db-sequence Roundabout01 --q-sequence Roundabout03 \
     --pair O-Aeva \
-    --overlap_dir overlap_matrices \
-    --voxel_size 0.5 --pose_dist_threshold 10.0 --overlap_threshold 0.2
+    --overlap-dir overlap_matrices \
+    --voxel-size 0.5 --pose-dist-threshold 10.0 --overlap-threshold 0.2
 ```
 
-It re-loads the DB/Q poses and scans (same range-filter → global-frame → voxelize pipeline as [`inlier gt build`](inlier/eval/overlap_build.py)) and opens a figure with: (a) DB/Q trajectories in 3D with edges drawn between scan pairs above `--overlap_threshold` and within `--pose_dist_threshold`, colored by overlap value; (b) summary statistics (non-zero entries, entries above threshold, max/mean overlap); (c) a histogram of non-zero overlap values; and (d) top-down aligned views of one randomly picked high-overlap and one low-overlap scan pair. Pass `--seed` to fix which example pair is shown.
+It re-loads the DB/Q poses and scans (same range-filter → global-frame → voxelize pipeline as [`inlier gt build`](inlier/eval/overlap_build.py)) and opens a figure with: (a) DB/Q trajectories in 3D with edges drawn between scan pairs above `--overlap-threshold` and within `--pose-dist-threshold`, colored by overlap value; (b) summary statistics (non-zero entries, entries above threshold, max/mean overlap); (c) a histogram of non-zero overlap values; and (d) top-down aligned views of one randomly picked high-overlap and one low-overlap scan pair. Pass `--seed` to fix which example pair is shown.
 
 <p align=center>
   <img src="figures/overlaps_example.png" alt="Overlap validation figure for Roundabout01 (Ouster) vs Roundabout03 (Aeva)" width="90%"/>
@@ -399,11 +399,11 @@ The `encoder:` block defines the descriptor itself — every point that survives
 inlier eval cross-session \
     --config config/default.yaml \
     --dataset /path/to/HeLiPR \
-    --db_sequence Roundabout01 --q_sequence Roundabout03 \
+    --db-sequence Roundabout01 --q-sequence Roundabout03 \
     --pair O-Aeva \
-    --overlap_dir overlap_matrices \
-    --output_dir results/HeLiPR \
-    --overlap_threshold 0.2 --max_pose_dist 10.0
+    --overlap-dir overlap_matrices \
+    --output-dir results/HeLiPR \
+    --overlap-threshold 0.2 --max-pose-dist 10.0
 ```
 
 This writes the Recall/PR-AUC metrics (`results_*.json`), the loop-closure candidates (`candidates_*.csv`), per-pair verify poses (`per_pair_verify_*.csv`), the descriptor caches (`cache_inlier/desc_*.npz`), and a trajectory plot (`trajectory_*.png`) to the output folder. For datasets other than HeLiPR, see [Test Your Own Data](#️-test-your-own-data) below.
@@ -415,11 +415,11 @@ Replay a `DB←Q` run as an animation of the growing query trajectory, loop clos
 ```bash
 inlier play \
     --dataset /path/to/HeLiPR \
-    --output_dir results/HeLiPR/dbR01-O-qR03-Aeva_vs0.5_cs1_nh10_nr20_na60_ns7 \
-    --cache_dir cache_inlier
+    --output-dir results/HeLiPR/dbR01-O-qR03-Aeva_vs0.5_cs1_nh10_nr20_na60_ns7 \
+    --cache-dir cache_inlier
 ```
 
-The run's identity (sequences, sensors, GT thresholds, score threshold) is read from the `results_*.json` in `--output_dir` — no need to repeat it on the command line.
+The run's identity (sequences, sensors, GT thresholds, score threshold) is read from the `results_*.json` in `--output-dir` — no need to repeat it on the command line.
 
 Controls: `SPACE` play/pause, `←` / `→` step. Pass `--record out.mp4` to render headlessly.
 
@@ -429,7 +429,7 @@ Controls: `SPACE` play/pause, `←` / `→` step. Pass `--record out.mp4` to ren
 
 ## 🗃️ Test Your Own Data
 
-InLiER isn't tied to the HeLiPR loader — [`inlier eval cross-session --dataset_type generic`](inlier/eval/protocols/cross_session.py) runs the identical retrieval/evaluation pipeline on any folder-based dataset, via [`datasets/generic.py`](inlier/eval/datasets/generic.py).
+InLiER isn't tied to the HeLiPR loader — [`inlier eval cross-session --dataset-type generic`](inlier/eval/protocols/cross_session.py) runs the identical retrieval/evaluation pipeline on any folder-based dataset, via [`datasets/generic.py`](inlier/eval/datasets/generic.py).
 
 ### Dataset Layout
 
@@ -446,60 +446,60 @@ Each of your database and query sequences is its own folder:
 └── transform.txt            # optional: 4x4, maps DB world frame → Q world frame
 ```
 
-**`transform.txt` — when you need it.** InLiER compares database and query poses directly (to build the overlap GT and to filter candidates by `--max_pose_dist`), so both sequences must live in the *same* world frame. If they already do — e.g. both were mapped in one session, or registered to a shared global frame — no transform is needed. If they were mapped independently, each sequence's poses start at its own arbitrary origin, and the DB/Q pose distances would be meaningless. `transform.txt` is the 4×4 matrix that maps the **DB world frame into the Q world frame**, and it's applied to the DB keyframe poses before any distance or overlap computation.
+**`transform.txt` — when you need it.** InLiER compares database and query poses directly (to build the overlap GT and to filter candidates by `--max-pose-dist`), so both sequences must live in the *same* world frame. If they already do — e.g. both were mapped in one session, or registered to a shared global frame — no transform is needed. If they were mapped independently, each sequence's poses start at its own arbitrary origin, and the DB/Q pose distances would be meaningless. `transform.txt` is the 4×4 matrix that maps the **DB world frame into the Q world frame**, and it's applied to the DB keyframe poses before any distance or overlap computation.
 
-The evaluation auto-detects `<db_path>/transform.txt` if it exists; pass `--transform <path>` to point elsewhere, or `--no_transform` to force the shared-frame assumption even when the file is present. Use the same choice for both [`inlier gt build`](inlier/eval/overlap_build.py) and [`inlier eval cross-session --dataset_type generic`](inlier/eval/protocols/cross_session.py) — a mismatch silently produces a wrong GT matrix.
+The evaluation auto-detects `<db_path>/transform.txt` if it exists; pass `--transform <path>` to point elsewhere, or `--no-transform` to force the shared-frame assumption even when the file is present. Use the same choice for both [`inlier gt build`](inlier/eval/overlap_build.py) and [`inlier eval cross-session --dataset-type generic`](inlier/eval/protocols/cross_session.py) — a mismatch silently produces a wrong GT matrix.
 
-**Pre-accumulated vs. single scans.** `scans/` can hold either. If your `.pcd` files are already accumulated submaps (as with the HeLiPR toolbox output), run with `--n_db 1 --n_q 1` and each file is used as-is. If they're single sensor scans, let the evaluation accumulate them: `--n_db` / `--n_q` set how many consecutive scans form one submap, each window anchored at its first scan (the keyframe) with the rest transformed into that keyframe's pose via `inv(T_i) @ T_k`. `--stride_db` / `--stride_q` set the step between consecutive submaps and default to `n_db` / `n_q`, i.e. non-overlapping submaps; a stride of 1 gives maximally overlapping ones. Either way there must be exactly one pose per `.pcd` file — the loader errors out on a count mismatch.
+**Pre-accumulated vs. single scans.** `scans/` can hold either. If your `.pcd` files are already accumulated submaps (as with the HeLiPR toolbox output), run with `--n-db 1 --n-q 1` and each file is used as-is. If they're single sensor scans, let the evaluation accumulate them: `--n-db` / `--n-q` set how many consecutive scans form one submap, each window anchored at its first scan (the keyframe) with the rest transformed into that keyframe's pose via `inv(T_i) @ T_k`. `--stride-db` / `--stride-q` set the step between consecutive submaps and default to `n_db` / `n_q`, i.e. non-overlapping submaps; a stride of 1 gives maximally overlapping ones. Either way there must be exactly one pose per `.pcd` file — the loader errors out on a count mismatch.
 
 Sparse single scans (solid-state, or low-resolution spinning units) generally need accumulation for the height-slice keypoints to be stable.
 
 ### Overlap Ground Truth
 
-[`inlier gt build`](inlier/eval/overlap_build.py) also supports generic data — pass `--dataset_type generic --db_path ... --q_path ...` (same `.pcd` + `poses_kitti.txt` layout, plus the DB→Q `--transform`) to compute the pairwise overlap matrix, just as in [Building Overlap Ground Truth](#building-overlap-ground-truth) for HeLiPR.
+[`inlier gt build`](inlier/eval/overlap_build.py) also supports generic data — pass `--dataset-type generic --db-path ... --q-path ...` (same `.pcd` + `poses_kitti.txt` layout, plus the DB→Q `--transform`) to compute the pairwise overlap matrix, just as in [Building Overlap Ground Truth](#building-overlap-ground-truth) for HeLiPR.
 
-With pre-accumulated scans, the defaults (`--n_db 1 --n_q 1`) use each `.pcd` as-is:
+With pre-accumulated scans, the defaults (`--n-db 1 --n-q 1`) use each `.pcd` as-is:
 
 ```bash
 inlier gt build \
-    --dataset_type generic \
-    --db_path /path/to/database \
-    --q_path  /path/to/query \
+    --dataset-type generic \
+    --db-path /path/to/database \
+    --q-path  /path/to/query \
     --transform /path/to/transform.txt \
-    --output_dir overlap_matrices \
-    --voxel_size 0.5 --distance_threshold 100
+    --output-dir overlap_matrices \
+    --voxel-size 0.5 --distance-threshold 100
 ```
 
 With single scans, accumulate them into submaps — e.g. 10 scans per submap, stepping one scan at a time:
 
 ```bash
 inlier gt build \
-    --dataset_type generic \
-    --db_path /path/to/database \
-    --q_path  /path/to/query \
+    --dataset-type generic \
+    --db-path /path/to/database \
+    --q-path  /path/to/query \
     --transform /path/to/transform.txt \
-    --output_dir overlap_matrices \
-    --n_db 10 --n_q 10 --stride_db 1 --stride_q 1 \
-    --voxel_size 0.5 --distance_threshold 100
+    --output-dir overlap_matrices \
+    --n-db 10 --n-q 10 --stride-db 1 --stride-q 1 \
+    --voxel-size 0.5 --distance-threshold 100
 ```
 
-A stride of 1 keeps one submap per scan, so the overlap matrix stays at full resolution (`M_db × M_q` with `M ≈ number of scans`) at the cost of a longer build. Leaving `--stride_*` out defaults it to `n`, giving non-overlapping submaps and a ~10× smaller matrix. `--n_db` / `--n_q` / `--stride_db` / `--stride_q` **must match what you later pass to** [`inlier eval cross-session --dataset_type generic`](inlier/eval/protocols/cross_session.py) — the matrix is indexed by submap, so any difference misaligns the GT against the retrieval results.
+A stride of 1 keeps one submap per scan, so the overlap matrix stays at full resolution (`M_db × M_q` with `M ≈ number of scans`) at the cost of a longer build. Leaving `--stride-*` out defaults it to `n`, giving non-overlapping submaps and a ~10× smaller matrix. `--n-db` / `--n-q` / `--stride-db` / `--stride-q` **must match what you later pass to** [`inlier eval cross-session --dataset-type generic`](inlier/eval/protocols/cross_session.py) — the matrix is indexed by submap, so any difference misaligns the GT against the retrieval results.
 
 ### Evaluation
 
 ```bash
-inlier eval cross-session --dataset_type generic \
+inlier eval cross-session --dataset-type generic \
     --config config/default.yaml \
-    --db_path /path/to/database \
-    --q_path  /path/to/query \
+    --db-path /path/to/database \
+    --q-path  /path/to/query \
     --transform /path/to/transform.txt \
-    --overlap_file /path/to/overlap.txt \
-    --overlap_threshold 0.2 --max_pose_dist 25.0 \
-    --n_db 10 --n_q 10 --stride_db 1 --stride_q 1 \
-    --output_dir results/generic_dataset
+    --overlap-file /path/to/overlap.txt \
+    --overlap-threshold 0.2 --max-pose-dist 25.0 \
+    --n-db 10 --n-q 10 --stride-db 1 --stride-q 1 \
+    --output-dir results/generic_dataset
 ```
 
-`--transform` defaults to `<db_path>/transform.txt` if present, and `--no_transform` disables it when both sequences already share a world frame. Outputs match the HeLiPR driver (`results_*.json`, `candidates_*.csv`, descriptor caches, trajectory plot) under `--output_dir`.
+`--transform` defaults to `<db_path>/transform.txt` if present, and `--no-transform` disables it when both sequences already share a world frame. Outputs match the HeLiPR driver (`results_*.json`, `candidates_*.csv`, descriptor caches, trajectory plot) under `--output-dir`.
 
 ## 🔜 Coming Soon
 

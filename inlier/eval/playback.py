@@ -20,20 +20,20 @@ It consumes the artifacts written by ``evaluate_inlier_helipr.py``:
 and reloads the raw scans through ``HeLiPR_Handler``.
 
 The sequences, sensors, GT thresholds, token grid and score threshold are read
-from the results JSON in --output_dir, so playback always describes the run it
+from the results JSON in --output-dir, so playback always describes the run it
 is rendering.  Only what the eval does not record is passed on the CLI: the
-dataset root, the cache dir, and the scan subfolder (--db_type / --q_type).
+dataset root, the cache dir, and the scan subfolder (--db-type / --q-type).
 
 The TP/FP labels are the eval's, not this script's: it renders the closures in
 candidates_{pair_tag}.csv as labelled.  To see a different set, re-run
-evaluate_inlier_helipr.py with a different --pr_threshold / GT definition.
+evaluate_inlier_helipr.py with a different --pr-threshold / GT definition.
 
 Example
 -------
 python3 evaluation/playback_evaluation.py \
-    --output_dir results/HeLiPR/Ouster01_Aeva03/dbR01-O-qR03-Aeva_vs0.5_cs1_nh10_nr20_na60_ns7 \
+    --output-dir results/HeLiPR/Ouster01_Aeva03/dbR01-O-qR03-Aeva_vs0.5_cs1_nh10_nr20_na60_ns7 \
     --dataset ~/Documents/datasets/HeLiPR \
-    --cache_dir cache_inlier \
+    --cache-dir cache_inlier \
     --record /path/to/output.mp4
 """
 
@@ -201,11 +201,11 @@ def load_results_json(output_dir: Path, explicit: Path | None) -> tuple[Path, di
         if not hits:
             raise FileNotFoundError(
                 f"No results_*.json in {output_dir}. Run "
-                f"evaluate_inlier_helipr.py first, or pass --results_json.")
+                f"evaluate_inlier_helipr.py first, or pass --results-json.")
         if len(hits) > 1:
             print(f"  [results] {len(hits)} results JSONs in {output_dir.name}; "
                   f"using newest: {Path(hits[-1]).name}  "
-                  f"(pass --results_json to pin one)")
+                  f"(pass --results-json to pin one)")
         path = Path(hits[-1])
 
     with open(path) as f:
@@ -244,29 +244,29 @@ def main(argv=None):
         description="Animated replay of a HeLiPR InLiER evaluation run.")
     # Eval outputs — the run's identity (sequences, sensors, GT thresholds,
     # token grid) is read from results_*.json here, never passed on the CLI.
-    ap.add_argument("--output_dir", type=Path, required=True,
+    ap.add_argument("--output-dir", type=Path, required=True,
                     help="Eval output folder (results JSON + CSVs live here).")
-    ap.add_argument("--results_json", type=Path, default=None,
+    ap.add_argument("--results-json", type=Path, default=None,
                     help="Pin a specific results_*.json (default: newest in "
-                         "--output_dir).")
+                         "--output-dir).")
     # Things the eval run does not record
     ap.add_argument("--dataset", type=Path,
                     default=Path("~/Documents/datasets/HeLiPR").expanduser(),
                     help="HeLiPR dataset root (contains the sequence folders).")
-    ap.add_argument("--cache_dir", type=Path, default=Path("cache_inlier"))
-    ap.add_argument("--db_type", default="Undistorted",
+    ap.add_argument("--cache-dir", type=Path, default=Path("cache_inlier"))
+    ap.add_argument("--db-type", default="Undistorted",
                     help="Scan subfolder / cache tag; must match the seq_type "
                          "evaluate_inlier_helipr.py encoded with.")
-    ap.add_argument("--q_type", default="Undistorted",
+    ap.add_argument("--q-type", default="Undistorted",
                     help="Scan subfolder / cache tag; must match the seq_type "
                          "evaluate_inlier_helipr.py encoded with.")
     # Explicit overrides (skip auto-discovery)
-    ap.add_argument("--candidates_csv", type=Path, default=None)
-    ap.add_argument("--verify_csv", type=Path, default=None)
-    ap.add_argument("--db_cache", type=Path, default=None)
-    ap.add_argument("--q_cache", type=Path, default=None)
+    ap.add_argument("--candidates-csv", type=Path, default=None)
+    ap.add_argument("--verify-csv", type=Path, default=None)
+    ap.add_argument("--db-cache", type=Path, default=None)
+    ap.add_argument("--q-cache", type=Path, default=None)
     # Display
-    ap.add_argument("--score_col", default="score")
+    ap.add_argument("--score-col", default="score")
     # Recording
     ap.add_argument("--record", type=Path, default=None,
                     help="If set, render all keyframes to this MP4 and exit.")

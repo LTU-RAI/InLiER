@@ -20,20 +20,20 @@ indices so only a small subset of point clouds lives in memory at once.
 
 Usage — HeLiPR:
   python3 evaluation/scripts/build_overlap_data.py \
-    --dataset_type helipr \
+    --dataset-type helipr \
     --dataset ~/Documents/datasets/HeLiPR/ \
-    --db_sequence Roundabout01 --q_sequence Roundabout03 \
-    --output_dir overlap_matrices --pairs O-Aeva \
-    --voxel_size 0.5 --distance_threshold 100 --block_size 200
+    --db-sequence Roundabout01 --q-sequence Roundabout03 \
+    --output-dir overlap_matrices --pairs O-Aeva \
+    --voxel-size 0.5 --distance-threshold 100 --block-size 200
 
 Usage — generic (.pcd + poses_kitti.txt):
   python3 evaluation/scripts/build_overlap_data.py \
-    --dataset_type generic \
-    --db_path ~/Documents/datasets/campus_ouster \
-    --q_path  ~/Documents/datasets/campus_robinw \
+    --dataset-type generic \
+    --db-path ~/Documents/datasets/campus_ouster \
+    --q-path  ~/Documents/datasets/campus_robinw \
     --transform ~/Documents/datasets/campus_ouster/T_robinw_ouster.txt \
-    --voxel_size 0.5 --distance_threshold 100 \
-    --icp --icp_max_dist 1.5                                           
+    --voxel-size 0.5 --distance-threshold 100 \
+    --icp --icp-max-dist 1.5                                           
 """
 
 import argparse
@@ -553,24 +553,24 @@ def main(argv=None):
         description="Compute HeLiOS overlap matrices."
     )
     parser.add_argument(
-        "--dataset_type", type=str, default="helipr",
+        "--dataset-type", type=str, default="helipr",
         choices=["helipr", "generic", "custom"], metavar="{helipr,generic}",
         help="Dataset type: 'helipr' (default) or 'generic' (.pcd + poses_kitti.txt).  "
              "'custom' is accepted as a deprecated alias for 'generic'."
     )
 
     # ---- HeLiPR-only args ----
-    helipr = parser.add_argument_group("HeLiPR options (dataset_type=helipr)")
+    helipr = parser.add_argument_group("HeLiPR options (--dataset-type helipr)")
     helipr.add_argument(
         "--dataset", type=str,
         help="Root path to the HeLiPR dataset."
     )
     helipr.add_argument(
-        "--db_sequence", type=str,
+        "--db-sequence", type=str,
         help="Database sequence name, e.g. 'Roundabout01'."
     )
     helipr.add_argument(
-        "--q_sequence", type=str,
+        "--q-sequence", type=str,
         help="Query sequence name, e.g. 'Roundabout03'."
     )
     helipr.add_argument(
@@ -581,13 +581,13 @@ def main(argv=None):
     )
 
     # ---- generic-only args ----
-    generic = parser.add_argument_group("Generic options (dataset_type=generic)")
+    generic = parser.add_argument_group("Generic options (--dataset-type generic)")
     generic.add_argument(
-        "--db_path", type=str,
+        "--db-path", type=str,
         help="Path to the DB dataset directory (contains scans/ and poses_kitti.txt)."
     )
     generic.add_argument(
-        "--q_path", type=str,
+        "--q-path", type=str,
         help="Path to the Q dataset directory (contains scans/ and poses_kitti.txt)."
     )
     generic.add_argument(
@@ -598,7 +598,7 @@ def main(argv=None):
 
     # ---- shared args ----
     parser.add_argument(
-        "--output_dir", type=str, default="overlap_matrices",
+        "--output-dir", type=str, default="overlap_matrices",
         help="Directory to save output files (default: overlap_matrices)."
     )
     parser.add_argument(
@@ -607,43 +607,43 @@ def main(argv=None):
              "its local Q cloud before computing overlap."
     )
     parser.add_argument(
-        "--icp_max_dist", type=float, default=None,
+        "--icp-max-dist", type=float, default=None,
         help="Max correspondence distance for GICP refinement (default: 3 * voxel_size)."
     )
     parser.add_argument(
-        "--n_db", type=int, default=1,
+        "--n-db", type=int, default=1,
         help="Scans per DB submap. First scan's pose is the keyframe. "
              "Default 1 (single-scan, no accumulation)."
     )
     parser.add_argument(
-        "--n_q", type=int, default=1,
+        "--n-q", type=int, default=1,
         help="Scans per Q submap. First scan's pose is the keyframe. "
              "Default 1 (single-scan, no accumulation)."
     )
     parser.add_argument(
-        "--stride_db", type=int, default=None,
+        "--stride-db", type=int, default=None,
         help="Step between successive DB submaps. Default = n_db "
              "(non-overlapping). Set < n_db for overlapping, > n_db for gaps."
     )
     parser.add_argument(
-        "--stride_q", type=int, default=None,
+        "--stride-q", type=int, default=None,
         help="Step between successive Q submaps. Default = n_q "
              "(non-overlapping)."
     )
     parser.add_argument(
-        "--voxel_size", type=float, default=0.04,
+        "--voxel-size", type=float, default=0.04,
         help="Voxel size δ in metres for overlap (default: 0.04)."
     )
     parser.add_argument(
-        "--distance_threshold", type=float, default=100.0,
+        "--distance-threshold", type=float, default=100.0,
         help="Max pose distance (m) for non-zero overlap (default: 100.0)."
     )
     parser.add_argument(
-        "--max_range", type=float, default=100.0,
+        "--max-range", type=float, default=100.0,
         help="Max point range from sensor origin in metres (default: 100.0)."
     )
     parser.add_argument(
-        "--block_size", type=int, default=50,
+        "--block-size", type=int, default=50,
         help="Number of DB scans to process per block.  "
              "Lower = less peak RAM.  (default: 50)"
     )
@@ -658,8 +658,8 @@ def main(argv=None):
     if args.dataset_type == "helipr":
         if not args.dataset or not args.db_sequence or not args.q_sequence:
             parser.error(
-                "--dataset, --db_sequence, and --q_sequence are required "
-                "for dataset_type=helipr"
+                "--dataset, --db-sequence, and --q-sequence are required "
+                "for --dataset-type helipr"
             )
 
         handler = HeLiPR_Handler(Path(args.dataset), verbose=True)
@@ -742,7 +742,7 @@ def main(argv=None):
     else:
         if not args.db_path or not args.q_path:
             parser.error(
-                "--db_path and --q_path are required for dataset_type=generic"
+                "--db-path and --q-path are required for --dataset-type generic"
             )
 
         db_path = Path(args.db_path)

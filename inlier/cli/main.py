@@ -16,7 +16,7 @@ import sys
 from typing import List, Optional, Sequence
 
 from inlier.cli._common import (BACKENDS, add_global_flags, apply_backend,
-                                 apply_verbosity, expand_user)
+                                 apply_verbosity, expand_user, kebab_flags)
 from inlier.version import __version__
 
 
@@ -145,7 +145,7 @@ def _register_unavailable(subparsers, parent, name: str, exc: Exception) -> None
 
 
 def main(argv: Optional[List[str]] = None) -> int:
-    argv = expand_user(sys.argv[1:] if argv is None else argv)
+    argv = kebab_flags(expand_user(sys.argv[1:] if argv is None else argv))
     _prescan_backend(argv)
     _prescan_quiet(argv)
 

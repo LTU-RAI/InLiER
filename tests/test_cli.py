@@ -208,6 +208,49 @@ def test_encode_viz_save_on_a_directory_writes_one_figure_per_scan(
     assert (figures / f"{scan_file.stem}.png").exists()
 
 
+# --- flag spelling ---------------------------------------------------------
+# Every flag is kebab-case; the snake_case spellings the 0.2.x README
+# documented are rewritten on argv so they keep working without doubling the
+# width of every --help line.
+
+def test_kebab_flags_rewrites_the_option_name():
+    from inlier.cli._common import kebab_flags
+
+    assert kebab_flags(["--dataset_type", "generic"]) == ["--dataset-type", "generic"]
+    assert kebab_flags(["--output_dir=x_y"]) == ["--output-dir=x_y"]
+
+
+def test_kebab_flags_leaves_values_alone():
+    """`--set stage1.min_shared_rows=3` names a config key, not a flag."""
+    from inlier.cli._common import kebab_flags
+
+    argv = ["--set", "stage1.min_shared_rows=3", "-q", "some_file.pcd", "--set=a.b_c=1"]
+    assert kebab_flags(argv) == argv
+
+
+def test_snake_spelling_still_reaches_a_command(capsys, generic_dataset):
+    code, out = _run(capsys, "doctor", "--dataset", str(generic_dataset),
+                     "--dataset_type", "generic")
+    assert code == 0
+    assert "generic -- <root>/scans/*.pcd" in out.out
+
+
+def test_snake_spelling_survives_passthrough_to_a_wrapped_script(capsys):
+    """`inlier gt` forwards its leftovers verbatim, so it needs the rewrite too."""
+    with pytest.raises(SystemExit) as exc:
+        main(["gt", "build", "--dataset_type", "generic"])
+    assert exc.value.code == 2
+    assert "--db-path and --q-path are required" in capsys.readouterr().err
+
+
+def test_help_offers_one_spelling_per_flag(capsys):
+    with pytest.raises(SystemExit):
+        main(["eval", "cross-session", "--help"])
+    body = capsys.readouterr().out
+    for flag in ("--dataset_type", "--db_path", "--output_dir", "--n_db"):
+        assert flag not in body
+
+
 # --- tilde expansion -------------------------------------------------------
 # bash expands `--opt ~/x` but not `--opt=~/x`, so the second form reaches
 # argparse with a literal `~` and fails as a missing path that is plainly

@@ -11,18 +11,18 @@ This shim translates the old flags and forwards.  It is removed in 0.4.0.
 
 import sys
 
-# old flag -> new flag.  Everything else keeps its name; the CLI accepts both
-# --kebab-case and the --snake_case spellings the README documents.
+# old flag -> new flag.  Only genuine renames belong here: --snake_case is
+# turned into --kebab-case for every flag by the CLI entry point.
 _RENAMES = {
-    "--pr_threshold": "--threshold",
-    "--output_dir": "--output-dir",
-    "--cache_dir": "--cache-dir",
+    "--pr-threshold": "--threshold",
 }
 
 
 def _translate(argv):
+    from inlier.cli._common import kebab_flags
+
     out = ["eval", "cross-session", "--dataset-type", "helipr"]
-    for token in argv:
+    for token in kebab_flags(argv):
         head, sep, tail = token.partition("=")
         out.append(_RENAMES.get(head, head) + sep + tail if sep
                    else _RENAMES.get(token, token))

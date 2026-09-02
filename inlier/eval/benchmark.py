@@ -15,10 +15,10 @@ Pass the usual eval arguments straight through, e.g.:
     python scripts/benchmark_cpp_vs_py.py \
         --config config/default.yaml \
         --dataset ~/Documents/datasets/HeLiPR/ \
-        --db_sequence Roundabout01 --q_sequence Roundabout03 --pair O-Aeva \
-        --overlap_threshold 0.2 --max_pose_dist 10.0 --pr_threshold 0.3
+        --db-sequence Roundabout01 --q-sequence Roundabout03 --pair O-Aeva \
+        --overlap-threshold 0.2 --max-pose-dist 10.0 --pr-threshold 0.3
 
-Any ``--output_dir`` / ``--cache_dir`` you pass are overridden: results
+Any ``--output-dir`` / ``--cache-dir`` you pass are overridden: results
 land in ``<out-base>/{cpp,python}/`` and caching is forced off so both
 backends really encode.  A comparison table is printed and saved to
 ``<out-base>/comparison_cpp_vs_py.{json,md}``.

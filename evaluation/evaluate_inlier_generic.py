@@ -8,27 +8,29 @@ and forwards.  It is removed in 0.4.0.
 
 import sys
 
+# Only genuine renames belong here: --snake_case is turned into --kebab-case
+# for every flag by the CLI entry point.
 _RENAMES = {
-    "--pr_threshold": "--threshold",
-    "--output_dir": "--output-dir",
-    "--cache_dir": "--cache-dir",
-    "--overlap_file": "--overlap-file",
+    "--pr-threshold": "--threshold",
 }
 
 # Flags the old generic driver accepted that the cross-session protocol does
 # not yet expose.  Dropping one silently would change what the run measures, so
 # they are reported rather than ignored.
 _UNSUPPORTED = {
-    "--refine_db_poses", "--refine_voxel_size", "--refine_distance_threshold",
-    "--refine_icp_max_dist", "--refine_max_range", "--db_overlap_filter",
-    "--local_radius",
+    "--refine-db-poses", "--refine-voxel-size", "--refine-distance-threshold",
+    "--refine-icp-max-dist", "--refine-max-range", "--db-overlap-filter",
+    "--local-radius",
 }
 
 
 def _translate(argv):
+    from inlier.cli._common import kebab_flags
+
     out = ["eval", "cross-session", "--dataset-type", "generic"]
     dropped = []
     skip_next = False
+    argv = kebab_flags(argv)
     for i, token in enumerate(argv):
         if skip_next:
             skip_next = False

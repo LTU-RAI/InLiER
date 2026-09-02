@@ -33,41 +33,40 @@ def _register_cross_session(sub, parent) -> None:
             "matrix. This is the protocol behind the published results."
         ),
     )
-    p.add_argument("--dataset-type", "--dataset_type", dest="dataset_type",
+    p.add_argument("--dataset-type", dest="dataset_type",
                    choices=("helipr", "generic"), default="helipr",
                    help="which loader to use (default: helipr)")
 
     helipr = p.add_argument_group("helipr options")
     helipr.add_argument("--dataset", type=str, help="HeLiPR dataset root")
-    helipr.add_argument("--db-sequence", "--db_sequence", dest="db_sequence", type=str)
-    helipr.add_argument("--q-sequence", "--q_sequence", dest="q_sequence", type=str)
+    helipr.add_argument("--db-sequence", dest="db_sequence", type=str)
+    helipr.add_argument("--q-sequence", dest="q_sequence", type=str)
     helipr.add_argument("--pair", type=str,
                         help="'<DB sensor>-<Q sensor>', e.g. O-Aeva")
-    helipr.add_argument("--overlap-dir", "--overlap_dir", dest="overlap_dir",
+    helipr.add_argument("--overlap-dir", dest="overlap_dir",
                         type=str, default="overlap_matrices")
 
     generic = p.add_argument_group("generic options")
-    generic.add_argument("--db-path", "--db_path", dest="db_path", type=str)
-    generic.add_argument("--q-path", "--q_path", dest="q_path", type=str)
-    generic.add_argument("--overlap-file", "--overlap_file", dest="overlap_file", type=str)
-    generic.add_argument("--n-db", "--n_db", dest="n_db", type=int, default=1,
+    generic.add_argument("--db-path", dest="db_path", type=str)
+    generic.add_argument("--q-path", dest="q_path", type=str)
+    generic.add_argument("--overlap-file", dest="overlap_file", type=str)
+    generic.add_argument("--n-db", dest="n_db", type=int, default=1,
                          help="scans accumulated per database submap (default: 1)")
-    generic.add_argument("--n-q", "--n_q", dest="n_q", type=int, default=1)
-    generic.add_argument("--stride-db", "--stride_db", dest="stride_db", type=int, default=None,
+    generic.add_argument("--n-q", dest="n_q", type=int, default=1)
+    generic.add_argument("--stride-db", dest="stride_db", type=int, default=None,
                          help="step between database submaps (default: --n-db)")
-    generic.add_argument("--stride-q", "--stride_q", dest="stride_q", type=int, default=None)
+    generic.add_argument("--stride-q", dest="stride_q", type=int, default=None)
     generic.add_argument("--transform", type=str, default=None,
                          help="4x4 mapping the DB world frame into the query world "
                               "frame; defaults to <db-path>/transform.txt if present")
-    generic.add_argument("--no-transform", "--no_transform", dest="no_transform",
+    generic.add_argument("--no-transform", dest="no_transform",
                          action="store_true",
                          help="both sequences already share a world frame")
 
     gt = p.add_argument_group("ground truth")
-    gt.add_argument("--overlap-threshold", "--overlap_threshold",
-                    dest="overlap_threshold", type=float, default=0.3,
+    gt.add_argument("--overlap-threshold", dest="overlap_threshold", type=float, default=0.3,
                     help="minimum scan overlap for a positive (default: 0.3)")
-    gt.add_argument("--max-pose-dist", "--max_pose_dist", dest="max_pose_dist",
+    gt.add_argument("--max-pose-dist", dest="max_pose_dist",
                     type=float, default=25.0,
                     help="maximum XY pose distance for a positive, 0 to disable "
                          "(default: 25.0)")
@@ -77,9 +76,9 @@ def _register_cross_session(sub, parent) -> None:
                          "error to a warning")
 
     out = p.add_argument_group("output")
-    out.add_argument("-o", "--output-dir", "--output_dir", dest="output_dir",
+    out.add_argument("-o", "--output-dir", dest="output_dir",
                      type=str, default="results")
-    out.add_argument("--cache-dir", "--cache_dir", dest="cache_dir", type=str,
+    out.add_argument("--cache-dir", dest="cache_dir", type=str,
                      default="cache_inlier",
                      help="descriptor cache; '' disables (default: cache_inlier)")
     out.add_argument("--threshold-policy", dest="threshold_policy",
@@ -88,8 +87,7 @@ def _register_cross_session(sub, parent) -> None:
                      help="how to pick the operating threshold. max_precision is "
                           "the default so published numbers reproduce; max_f1 is "
                           "what most baselines use. (default: max_precision)")
-    out.add_argument("--threshold", "--pr-threshold", "--pr_threshold",
-                     dest="threshold_value", type=float, default=None,
+    out.add_argument("--threshold", "--pr-threshold", dest="threshold_value", type=float, default=None,
                      help="operating threshold; implies --threshold-policy fixed")
     p.set_defaults(func=run_cross_session)
 

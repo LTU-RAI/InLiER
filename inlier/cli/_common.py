@@ -106,23 +106,6 @@ def current_backend() -> str:
     return _BACKEND
 
 
-def add_alias(parser: argparse.ArgumentParser, *names: str, **kwargs) -> None:
-    """Add a flag under both --kebab-case and --snake_case spellings.
-
-    The existing scripts and every command line in the README use snake_case.
-    The CLI standardises on kebab-case, and keeps the old spelling working so
-    documented invocations do not break.
-    """
-    primary = names[0]
-    aliases = [primary]
-    for name in names:
-        snake = name.replace("-", "_")
-        if snake != name and snake not in aliases:
-            aliases.append(snake)
-    dest = kwargs.pop("dest", primary.lstrip("-").replace("-", "_"))
-    parser.add_argument(*aliases, dest=dest, **kwargs)
-
-
 def existing_path(value: str) -> Path:
     p = Path(value).expanduser()
     if not p.exists():
@@ -161,6 +144,33 @@ def expand_user(argv: Sequence[str]) -> List[str]:
         match = _OPT_WITH_TILDE.match(token)
         if match:
             out.append(f"{match.group(1)}={os.path.expanduser(match.group(2))}")
+            continue
+        out.append(token)
+    return out
+
+
+# The option *name* only: `--set a.b_c=1` must keep its value untouched.
+_SNAKE_OPT = re.compile(r"^(--[A-Za-z0-9][A-Za-z0-9_-]*)(=.*)?$", re.DOTALL)
+
+
+def kebab_flags(argv: Sequence[str]) -> List[str]:
+    """Accept a ``--snake_case`` spelling of any ``--kebab-case`` flag.
+
+    Every flag in this CLI is kebab-case.  The scripts it absorbed
+    (``overlap_build``, ``overlap_validate``, ``playback``) spelled theirs with
+    underscores, and the 0.2.x README documented those spellings, so they have
+    to keep working -- but listing both in ``add_argument`` doubles the width
+    of every ``--help`` line.  Rewriting the name on argv instead keeps the old
+    invocations working and the help output single-spelled.
+
+    Applied at the entry point rather than per parser, so the commands that
+    forward their leftovers to a wrapped parser are covered too.
+    """
+    out: List[str] = []
+    for token in argv:
+        match = _SNAKE_OPT.match(token)
+        if match and "_" in match.group(1):
+            out.append(match.group(1).replace("_", "-") + (match.group(2) or ""))
             continue
         out.append(token)
     return out
