@@ -205,3 +205,72 @@ def test_frame_index_z_degenerate_lengths():
 
     assert frame_index_z(1).tolist() == [pytest.approx(TRAJ_Z_LIFT)]
     assert frame_index_z(0).shape == (0,)
+
+
+## --- the playback hot path ---
+
+
+def _reference_voxel_downsample(pts, voxel_size):
+    """The straightforward implementation, kept as the thing to match.
+
+    `np.unique(axis=0)` + `np.add.at`: obviously correct, and 8x too slow to
+    sit in the animation loop.
+    """
+    import numpy as np
+
+    if voxel_size <= 0 or pts.shape[0] == 0:
+        return pts
+    pts = pts[np.isfinite(pts).all(axis=1)]
+    if pts.shape[0] == 0:
+        return pts.astype(np.float32)
+    coords = np.floor(pts / voxel_size).astype(np.int64)
+    _, inv = np.unique(coords, axis=0, return_inverse=True)
+    K = int(inv.max()) + 1
+    sums = np.zeros((K, 3), dtype=np.float64)
+    counts = np.zeros(K, dtype=np.int64)
+    np.add.at(sums, inv, pts)
+    np.add.at(counts, inv, 1)
+    return (sums / counts[:, None]).astype(np.float32)
+
+
+@pytest.mark.parametrize("voxel_size", [0.5, 1.0, 2.5])
+def test_voxel_downsample_matches_the_reference_exactly(voxel_size):
+    """The packed-key fast path must not merely approximate the slow one.
+
+    Packing is positional over non-negative shifted coordinates, so its sort
+    order *is* the lexicographic row order -- the rows come out in the same
+    order with the same values, not just the same set.
+    """
+    import numpy as np
+
+    from inlier.eval.playback import voxel_downsample_np
+
+    rng = np.random.default_rng(0)
+    for trial in range(60):
+        n = int(rng.integers(1, 400))
+        pts = rng.uniform(-40.0, 40.0, (n, 3)).astype(np.float32)
+        if trial % 5 == 0:               # non-finite rows are dropped first
+            pts[int(rng.integers(0, n))] = np.nan
+        got = voxel_downsample_np(pts.copy(), voxel_size)
+        want = _reference_voxel_downsample(pts.copy(), voxel_size)
+        assert got.shape == want.shape
+        assert np.array_equal(got, want), f"trial {trial}"
+
+
+def test_voxel_downsample_edge_cases():
+    import numpy as np
+
+    from inlier.eval.playback import voxel_downsample_np
+
+    empty = np.zeros((0, 3), dtype=np.float32)
+    assert voxel_downsample_np(empty, 1.0).shape == (0, 3)
+    ## voxel_size <= 0 disables it
+    pts = np.array([[1.0, 2.0, 3.0]], dtype=np.float32)
+    assert np.array_equal(voxel_downsample_np(pts, 0.0), pts)
+    ## every point non-finite -> nothing survives, no crash
+    assert voxel_downsample_np(np.full((5, 3), np.nan, np.float32), 1.0).shape[0] == 0
+    ## one voxel, many points -> their centroid
+    cluster = np.array([[0.1, 0.1, 0.1], [0.3, 0.3, 0.3]], dtype=np.float32)
+    out = voxel_downsample_np(cluster, 1.0)
+    assert out.shape == (1, 3)
+    assert out[0] == pytest.approx([0.2, 0.2, 0.2], abs=1e-6)

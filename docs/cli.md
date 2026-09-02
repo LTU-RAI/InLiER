@@ -304,6 +304,30 @@ result file when a directory holds several; `--candidates-csv`,
 `--verify-csv`, `--db-cache`, `--q-cache` skip auto-discovery. Apart from
 `--record`, playback writes nothing.
 
+### Density, and why it is the speed knob
+
+Everything drawn is a voxel downsample of an accumulated submap, and at
+`--n-scans 40` one submap is around a million points. Thinning it is the whole
+per-frame cost, so these three flags trade detail against speed directly:
+
+| flag | default | effect |
+|---|---|---|
+| `--q-voxel-size` | 1.0 | voxel size (m) for the per-keyframe scans; larger is coarser and faster, `0` disables downsampling |
+| `--db-voxel-size` | 1.0 | same, for database scans — the prior map and the matched frame in the panel |
+| `--db-map-stride` | 50 | build the prior map from every Nth keyframe. Ignored by single-session runs, which have no prior map |
+
+```bash
+# faster, coarser: good for scrubbing a long session
+inlier play --run-dir results/lcd/... --q-voxel-size 2.0 --db-voxel-size 2.0
+
+# denser map for a final render, at a longer stride to keep it affordable
+inlier play --run-dir results/HeLiPR/... --db-voxel-size 0.5 --db-map-stride 20 \
+    --record loops.mp4
+```
+
+The values are echoed in the header the command prints, so a recording says
+what it was rendered at.
+
 Both protocols replay with the same command — the run's JSON says which it is,
 so nothing has to be passed. A cross-session run stacks its two sessions:
 database below, query above, every edge crossing the gap.

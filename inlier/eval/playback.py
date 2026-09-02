@@ -48,6 +48,7 @@ import argparse
 import glob
 import json
 import os
+from functools import lru_cache
 from pathlib import Path
 
 import numpy as np
@@ -69,6 +70,8 @@ from inlier.eval.datasets import source_from_describe
 
 # ── Visualisation constants (tunable) ───────────────────────────────────────
 Z_OFFSET   = 5.0
+#: Downsampled submaps kept in memory; ~0.3 MB each at 1 m voxels.
+LOCAL_SCAN_CACHE = 256
 Z_SQUASH   = 0.75
 DB_VOXEL_SIZE = 1.0
 Q_VOXEL_SIZE  = 1.0
@@ -125,18 +128,44 @@ VIDEO_SUFFIXES = {".mp4", ".mkv", ".mov", ".avi", ".webm"}
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
 def voxel_downsample_np(pts: np.ndarray, voxel_size: float) -> np.ndarray:
+    """Voxel-grid mean of ``pts``, for display only.
+
+    The encoder has its own downsampler (:func:`inlier.eval.encode.voxel_downsample`);
+    this one exists so playback can thin a million-point submap before drawing
+    it, and it is the hot path of the whole animation -- one accumulated submap
+    is downsampled every time a frame is touched.
+
+    Two things make it fast enough to sit in that loop.  ``np.unique(axis=0)``
+    lexsorts a structured view of the (N, 3) coordinates; packing the three
+    voxel indices into one integer first turns that into a plain 1-D sort.  The
+    packing is positional and the coordinates are shifted non-negative, so its
+    key order *is* the lexicographic row order -- the output is unchanged, not
+    merely equivalent.  And ``np.add.at`` is an unbuffered scatter-add;
+    ``np.bincount`` does the same reduction with a buffered one.
+    """
     if voxel_size <= 0 or pts.shape[0] == 0:
         return pts
     pts = pts[np.isfinite(pts).all(axis=1)]
     if pts.shape[0] == 0:
         return pts.astype(np.float32)
+
     coords = np.floor(pts / voxel_size).astype(np.int64)
-    _, inv = np.unique(coords, axis=0, return_inverse=True)
+    coords -= coords.min(axis=0)
+    dims = [int(d) for d in coords.max(axis=0) + 1]
+    if dims[0] * dims[1] * dims[2] < (1 << 62):
+        keys = (coords[:, 0] * dims[1] + coords[:, 1]) * dims[2] + coords[:, 2]
+        _, inv = np.unique(keys, return_inverse=True)
+    else:
+        # Extent too large to pack without overflowing int64; the slow path is
+        # still correct, and a cloud this spread out is not the common case.
+        _, inv = np.unique(coords, axis=0, return_inverse=True)
+
+    inv = inv.ravel()
     K = int(inv.max()) + 1
-    sums = np.zeros((K, 3), dtype=np.float64)
-    counts = np.zeros(K, dtype=np.int64)
-    np.add.at(sums, inv, pts)
-    np.add.at(counts, inv, 1)
+    counts = np.bincount(inv, minlength=K)
+    sums = np.stack(
+        [np.bincount(inv, weights=pts[:, c], minlength=K) for c in range(3)],
+        axis=1)
     return (sums / counts[:, None]).astype(np.float32)
 
 
@@ -361,6 +390,22 @@ def main(argv=None):
     ap.add_argument("--q-cache", type=Path, default=None)
     # Display
     ap.add_argument("--score-col", default="score")
+    # Point-cloud density. These are the whole cost of a frame: an accumulated
+    # submap is a million points, and everything drawn is a downsample of one.
+    # Coarser voxels and a longer map stride trade detail for speed directly.
+    ap.add_argument("--q-voxel-size", type=float, default=Q_VOXEL_SIZE,
+                    help=f"voxel size (m) for the scans drawn per keyframe; "
+                         f"larger is coarser and faster, 0 disables "
+                         f"downsampling (default: {Q_VOXEL_SIZE})")
+    ap.add_argument("--db-voxel-size", type=float, default=DB_VOXEL_SIZE,
+                    help=f"voxel size (m) for database scans -- the prior map, "
+                         f"and the matched frame in the keyframe panel "
+                         f"(default: {DB_VOXEL_SIZE})")
+    ap.add_argument("--db-map-stride", type=int, default=DB_MAP_STRIDE,
+                    help=f"keyframe stride when building the database prior "
+                         f"map; every Nth keyframe. Ignored by single-session "
+                         f"runs, which have no prior map "
+                         f"(default: {DB_MAP_STRIDE})")
     # Recording
     ap.add_argument("--record", type=Path, default=None,
                     help="If set, render all keyframes to this MP4 and exit.")
@@ -388,6 +433,10 @@ def main(argv=None):
         matplotlib.use("TkAgg", force=True)
 
     SCORE_COL = args.score_col
+    q_voxel, db_voxel = args.q_voxel_size, args.db_voxel_size
+    db_map_stride = args.db_map_stride
+    if db_map_stride < 1:
+        raise ValueError(f"--db-map-stride must be >= 1, got {db_map_stride}")
 
     # ── Run identity: read from the eval's own results JSON ──────────────────
     results_json, results = load_results_json(args.run_dir, args.results_json)
@@ -421,6 +470,8 @@ def main(argv=None):
         print(f"  DB cache   : {db_cache}")
         print(f"  Q  cache   : {q_cache}")
     print(f"  token grid : NH={NH} NR={NR} NA={NA} NS={NS}")
+    print(f"  voxels     : q={q_voxel} m  db={db_voxel} m"
+          + ("" if SINGLE_SESSION else f"  map stride={db_map_stride}"))
 
     # ── Descriptor caches ────────────────────────────────────────────────────
     db_npz = np.load(db_cache)
@@ -585,7 +636,7 @@ def main(argv=None):
         # protocol exists to avoid.
         print("  Single session: the map accumulates as it plays.")
     else:
-        db_map = build_map(db_clouds, db_poses_world, DB_VOXEL_SIZE, DB_MAP_STRIDE,
+        db_map = build_map(db_clouds, db_poses_world, db_voxel, db_map_stride,
                            desc="Building DB prior map")
         print(f"  DB map: {len(db_map)} pts")
         ax.scatter(db_map[:, 0], db_map[:, 1], np.zeros(len(db_map)),
@@ -595,15 +646,22 @@ def main(argv=None):
                 color=DB_TRAJ_COLOR, linewidth=TRAJ_LW, zorder=10)
 
     # ── Per-keyframe local scans (sensor frame). One scan per keyframe. ───────
+    # Memoised: one submap is asked for two to four times per frame -- once to
+    # place it in the world, again for the keyframe panel, and once per closure
+    # for the matched DB frame -- and downsampling an accumulated submap is the
+    # single most expensive thing the animation does.  Bounded so scrubbing a
+    # long session cannot grow without limit.
+    @lru_cache(maxsize=LOCAL_SCAN_CACHE)
     def get_q_local(i: int) -> np.ndarray:
         if not (0 <= i < len(q_clouds)):
             return np.empty((0, 3), dtype=np.float32)
-        return voxel_downsample_np(clean_scan(q_clouds[i]), Q_VOXEL_SIZE)
+        return voxel_downsample_np(clean_scan(q_clouds[i]), q_voxel)
 
+    @lru_cache(maxsize=LOCAL_SCAN_CACHE)
     def get_db_local(i: int) -> np.ndarray:
         if not (0 <= i < len(db_clouds)):
             return np.empty((0, 3), dtype=np.float32)
-        return voxel_downsample_np(clean_scan(db_clouds[i]), DB_VOXEL_SIZE)
+        return voxel_downsample_np(clean_scan(db_clouds[i]), db_voxel)
 
     def get_q_world(i: int) -> np.ndarray:
         return transform_local_to_world(get_q_local(i), q_poses_world[i])
@@ -759,7 +817,7 @@ def main(argv=None):
                         s=PANEL_KP_SIZE, c=Q_KP_COLOR,
                         alpha=PANEL_KP_ALPHA, linewidths=0, depthshade=False)
 
-        L = max(2.0, Q_VOXEL_SIZE * 4)
+        L = max(2.0, q_voxel * 4)
         ax2.plot([0, L], [0, 0], [0, 0], color="#e41a1c", linewidth=2)
         ax2.plot([0, 0], [0, L], [0, 0], color="#4daf4a", linewidth=2)
         ax2.plot([0, 0], [0, 0], [0, L], color="#377eb8", linewidth=2)
