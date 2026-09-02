@@ -249,6 +249,25 @@ and max recall at 100% precision, in a `loop_closure` block — alongside a
 `latency` block whose per-frame timings cover the query *and* the insertion,
 and are meaningful because the database really does grow one frame at a time.
 
+#### Which frames the loop-closure numbers score
+
+The `loop_closure` block is swept over **every** frame, and says so:
+`"population": "all_queries"`. That matters more than it sounds. The
+cross-session PR curve — and the `pr_auc` in each stage block here — scores only
+queries that have a ground-truth positive, which is nearly all of them when two
+sessions overlap. In a single session most frames close no loop at all, so
+scoring only the ones that do makes the failure this protocol exists to measure
+— firing where there is nothing to close — literally uncountable: no frame is
+ever a false negative at threshold 0, recall pins to 1.0, and `f1_max` lands on
+the degenerate accept-everything point. Counting every frame puts those false
+fires back in the denominator, so both `f1_max` and
+`max_recall_at_full_precision` mean what a SLAM reader expects.
+
+The stage `pr_auc` values keep the narrower retrieval population on purpose:
+they answer "when a loop *does* exist, is it ranked first", which is the
+place-recognition question and is what makes them comparable to published
+retrieval numbers. Two populations, both labelled, neither silently mixed.
+
 `seconds=` is the one unit that costs extra: the descriptor cache stores poses
 but not timestamps, so that window alone re-reads the sequence.
 

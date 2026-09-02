@@ -314,8 +314,13 @@ def run(spec: OnlineLCDSpec) -> RunResult:
     tp_edges, fp_edges, tp, fp, fn, tn = metrics.confusion(
         conf_sims, ground_truth, chosen.threshold, n, rank_order=conf_rank)
 
-    prec_curve, rec_curve, _ = metrics.pr_curve(
-        conf_sims, ground_truth, THR_LATER, rank_order=conf_rank)
+    # The loop-closure curve is swept over *every* frame, not just the ones
+    # that close a loop.  Most frames in a session close nothing, so scoring
+    # only the ones that do (what metrics.pr_curve does, and what the stage
+    # PR-AUCs above still do) hides the failure this protocol exists to
+    # measure -- firing where there is no loop -- and drives F1max to the
+    # degenerate accept-everything point at threshold 0.
+    prec_curve, rec_curve = metrics.pr_from_counts(ranked_results.sweep(THR_LATER))
     f1_max, f1_max_thr = metrics.f1_from_curve(prec_curve, rec_curve, THR_LATER)
     max_recall_100p = metrics.max_recall_at_full_precision(prec_curve, rec_curve)
     _log(spec, f"  F1max={f1_max:.4f}  max recall @ 100% precision="
@@ -433,7 +438,10 @@ def _build_results(spec, r, enc, n, n_queried, n_with_gt, effective_topk, gt_pol
         "verify": artifacts.stage_block(recalls_ver, kpct_ver, auc_ver),
         # The loop-closure headline: a pose graph survives a missed closure and
         # not a false one, so the operating point is judged on precision.
+        # ``population`` names the query set the curve was swept over -- the
+        # stage PR-AUCs above use the narrower ``queries_with_ground_truth``.
         "loop_closure": {
+            "population": "all_queries",
             "f1_max": round(f1_max, 6),
             "f1_max_threshold": round(f1_max_thr, 6),
             "max_recall_at_full_precision": round(max_recall_100p, 6),

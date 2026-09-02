@@ -23,6 +23,16 @@ So the reported confusion matrix describes a larger population than the curve
 it is quoted alongside.  That is how the published numbers were produced; the
 population is named explicitly in the results JSON rather than fixed silently.
 
+Which population is right depends on the question.  Cross-session asks a
+*retrieval* question -- given that a match exists, is it ranked first -- and
+nearly every one of its queries has a positive, so ``pr_curve``'s narrower
+population costs it almost nothing.  Online loop closure asks a *detection*
+question, and most of its frames close no loop at all, so the dominant failure
+-- firing where there is nothing to close -- is invisible to ``pr_curve``:
+at threshold 0 no query is ever an FN, recall pins to 1.0, and F1 peaks at
+accept-everything.  The online protocols therefore build their curve from
+``RankedResults.sweep`` via :func:`pr_from_counts`, which counts every query.
+
 Ranking conventions
 -------------------
 The two functions also disagree on how to combine ``rank_order`` with
@@ -119,6 +129,32 @@ def recall_at_kpct(
 #  Precision / recall
 # ---------------------------------------------------------------------------
 
+def _safe_ratio(num: np.ndarray, den: np.ndarray) -> np.ndarray:
+    """``num / den``, 0 where ``den`` is 0.
+
+    ``np.where`` evaluates both branches, so a plain division warned on every
+    threshold that made no decision at all (0/0 -> nan, then discarded).
+    ``np.divide`` with ``where=`` skips those entries instead of computing
+    them: identical output, no RuntimeWarning on a run whose scores are low.
+    """
+    return np.divide(num, den, out=np.zeros_like(num), where=den > 0)
+
+
+def pr_from_counts(counts: Dict[str, np.ndarray]) -> Tuple[np.ndarray, np.ndarray]:
+    """``(precisions, recalls)`` from already-swept TP/FP/FN counts.
+
+    Which queries were counted is the caller's choice, and that is the whole
+    point: :meth:`inlier.eval.retrieval.RankedResults.sweep` counts *every*
+    query, so one with no ground-truth positive that fires anyway lands in FP,
+    while ``sweep_gt_only`` reproduces :func:`pr_curve`'s narrower population.
+    The online protocols need the former -- see the module docstring.
+    """
+    tp = counts["tp"].astype(np.float64)
+    fp = counts["fp"].astype(np.float64)
+    fn = counts["fn"].astype(np.float64)
+    return _safe_ratio(tp, tp + fp), _safe_ratio(tp, tp + fn)
+
+
 def pr_curve(
     similarity_map: SimilarityMap,
     gt: GroundTruth,
@@ -158,13 +194,6 @@ def pr_curve(
                     fp[ti] += 1
             else:
                 fn[ti] += 1
-
-    # np.where evaluates both branches, so the plain division warned on every
-    # threshold that made no decision at all (0/0 -> nan, then discarded).
-    # np.divide with `where=` skips those entries instead of computing them:
-    # identical output, no RuntimeWarning on a run whose scores are all low.
-    def _safe_ratio(num: np.ndarray, den: np.ndarray) -> np.ndarray:
-        return np.divide(num, den, out=np.zeros_like(num), where=den > 0)
 
     precisions = _safe_ratio(tp, tp + fp)
     recalls = _safe_ratio(tp, tp + fn)

@@ -355,3 +355,29 @@ def test_metres_window_works_on_a_moving_sequence(session, tmp_path):
     assert res["config"]["exclusion"] == {"unit": "metres",
                                           "value": pytest.approx(STEP * 3)}
     assert res["dataset"]["n_queried"] > 0
+
+
+# --- the loop-closure curve's population -----------------------------------
+
+
+def test_loop_closure_curve_scores_every_frame(session, tmp_path):
+    """Frames that close no loop must be able to fail.
+
+    ``metrics.pr_curve`` scores only queries that have a ground-truth positive,
+    which on a session where most frames close nothing makes the dominant
+    failure -- firing where there is no loop -- unmeasurable, and drives F1max
+    to the accept-everything point at threshold 0.  The loop-closure block is
+    swept over all frames instead, so a threshold of 0 is now punished by the
+    lap-1 frames that have no twin behind them.
+    """
+    res = run(_spec(session, tmp_path, gtmod.Exclusion(frames=3))).results
+    lc = res["loop_closure"]
+
+    assert lc["population"] == "all_queries"
+    # The fixture has such frames: lap 1 revisits nothing.
+    assert res["dataset"]["n_with_ground_truth"] < res["dataset"]["n_frames"]
+    assert lc["f1_max_threshold"] > 0.0, lc
+
+    # The stage PR-AUCs keep the narrower retrieval population, so switching
+    # the headline did not quietly redefine them too.
+    assert "population" not in res["stage1"]
