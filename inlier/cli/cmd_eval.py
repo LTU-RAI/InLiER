@@ -128,14 +128,17 @@ def _register_online_lcd(sub, parent) -> None:
     p.add_argument("--dataset-type", dest="dataset_type",
                    choices=("helipr", "generic"), default="helipr",
                    help="which loader to use (default: helipr)")
+    ## One sequence, so one path: the HeLiPR root, or the generic sequence
+    ## directory.  Unlike cross-session there is no second session to name.
+    p.add_argument("--dataset", type=str,
+                   help="HeLiPR dataset root, or the sequence directory "
+                        "with --dataset-type generic")
 
     helipr = p.add_argument_group("helipr options")
-    helipr.add_argument("--dataset", type=str, help="HeLiPR dataset root")
     helipr.add_argument("--sequence", type=str, help="sequence name")
     helipr.add_argument("--sensor", type=str, help="sensor, e.g. Ouster or Aeva")
 
     generic = p.add_argument_group("generic options")
-    generic.add_argument("--path", type=str, help="sequence directory")
     generic.add_argument("--n-scans", dest="n_scans", type=int, default=1,
                          help="scans accumulated per submap (default: 1)")
     generic.add_argument("--stride", type=int, default=None,
@@ -193,8 +196,8 @@ def run_online_lcd(args) -> int:
                               verbose=not quiet)
         name, sensor = args.sequence, args.sensor
     else:
-        _require(args, ["path"], "generic")
-        path = Path(args.path)
+        _require(args, ["dataset"], "generic")
+        path = Path(args.dataset)
         stride = args.stride if args.stride is not None else args.n_scans
         source = GenericSource(path, args.n_scans, stride, verbose=not quiet)
         name, sensor = path.name, "q"

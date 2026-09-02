@@ -159,8 +159,15 @@ def pr_curve(
             else:
                 fn[ti] += 1
 
-    precisions = np.where(tp + fp > 0, tp / (tp + fp), 0.0)
-    recalls = np.where(tp + fn > 0, tp / (tp + fn), 0.0)
+    # np.where evaluates both branches, so the plain division warned on every
+    # threshold that made no decision at all (0/0 -> nan, then discarded).
+    # np.divide with `where=` skips those entries instead of computing them:
+    # identical output, no RuntimeWarning on a run whose scores are all low.
+    def _safe_ratio(num: np.ndarray, den: np.ndarray) -> np.ndarray:
+        return np.divide(num, den, out=np.zeros_like(num), where=den > 0)
+
+    precisions = _safe_ratio(tp, tp + fp)
+    recalls = _safe_ratio(tp, tp + fn)
     order = np.argsort(recalls)
     auc = float(np.trapezoid(precisions[order], recalls[order]))
     return precisions, recalls, auc

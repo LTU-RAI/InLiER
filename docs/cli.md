@@ -229,8 +229,9 @@ inlier eval online-lcd --dataset /data/HeLiPR \
 | group | flags |
 |---|---|
 | loader | `--dataset-type {helipr,generic}` (default: `helipr`) |
-| helipr | `--dataset`, `--sequence`, `--sensor` |
-| generic | `--path`, `--n-scans`, `--stride` |
+| path | `--dataset` — the HeLiPR root, or the sequence directory under `--dataset-type generic` |
+| helipr | `--sequence`, `--sensor` |
+| generic | `--n-scans`, `--stride` |
 | ground truth | `--exclusion` (default: `frames=100`), `--max-pose-dist` (default: 10.0), `--search-radius` (default: 0) |
 | output | as cross-session |
 

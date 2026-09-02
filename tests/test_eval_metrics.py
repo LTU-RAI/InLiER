@@ -212,3 +212,28 @@ def test_max_recall_at_full_precision():
     rec = np.array([0.9, 0.6, 0.2, 0.95])
     assert metrics.max_recall_at_full_precision(prec, rec) == pytest.approx(0.6)
     assert metrics.max_recall_at_full_precision(np.array([0.4]), np.array([0.9])) == 0.0
+
+
+def test_pr_curve_is_quiet_when_a_threshold_makes_no_decision():
+    """0/0 precision must not warn: it is a legitimate end of the sweep.
+
+    Above the highest score no query produces a match, so tp+fp is 0 there.
+    The value is 0.0 either way; this pins that computing it stays silent, so
+    a run whose scores are all low does not spray RuntimeWarnings.
+    """
+    import warnings
+
+    from inlier.eval import metrics
+
+    sims = {0: {5: 0.10}, 1: {7: 0.05}}
+    gt = {0: np.array([5]), 1: np.array([9])}
+    thresholds = np.linspace(0.0, 1.0, 21)      # most are above every score
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        prec, rec, auc = metrics.pr_curve(sims, gt, thresholds)
+
+    assert prec.shape == rec.shape == thresholds.shape
+    assert np.isfinite(prec).all() and np.isfinite(rec).all()
+    ## nothing clears a threshold above 0.10: no decisions, precision 0
+    assert prec[thresholds > 0.10].tolist() == [0.0] * int((thresholds > 0.10).sum())

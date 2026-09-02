@@ -39,11 +39,53 @@ class Generic_Handler:
             f"(expected poses_kitti.txt or poses_tum.txt)."
         )
 
-    def load_poses(self, dataset_dir: Path) -> List[np.ndarray]:
-        """Return a list of (4,4) float64 SE(3) matrices in dataset order."""
+    def _timestamps_beside(self, dataset_dir: Path, n_poses: int) -> List[float]:
+        """TUM timestamps for a dataset whose poses came from KITTI.
+
+        KITTI is pose-only, but a dataset shipping both files has the times
+        right there in ``poses_tum.txt`` column 0.  Discarding them would force
+        ``--exclusion`` onto ``frames=`` or ``metres=`` for no reason.
+
+        Which file supplies the *poses* is deliberately left alone: switching
+        the preference would change the pose values existing generic results
+        were produced with.  Only the timestamps are borrowed.  A count
+        mismatch means the two files describe different runs, so they are
+        dropped rather than misaligned onto the poses.
+        """
+        tum = dataset_dir / "poses_tum.txt"
+        if not tum.exists():
+            return []
+        stamps: List[float] = []
+        with open(tum, "r") as f:
+            for raw in f:
+                line = raw.strip()
+                if not line or line.startswith("#"):
+                    continue
+                parts = line.split()
+                if len(parts) < 8:
+                    return []
+                try:
+                    stamps.append(float(parts[0]))
+                except ValueError:
+                    return []
+        if len(stamps) != n_poses:
+            if self.verbose:
+                print(f"  [Generic_Handler] {tum.name} has {len(stamps)} lines "
+                      f"for {n_poses} poses; ignoring its timestamps")
+            return []
+        return stamps
+
+    def load_poses(self, dataset_dir: Path) -> Tuple[List[np.ndarray], List[float]]:
+        """``(poses, timestamps)`` in dataset order.
+
+        Timestamps come from TUM column 0 and are ``[]`` when the dataset has
+        none.  The two-value return matches ``HeLiPR_Handler.load_poses``,
+        which has always returned both.
+        """
         dataset_dir = Path(dataset_dir)
         pose_path, fmt = self._pose_file(dataset_dir)
         poses: List[np.ndarray] = []
+        stamps: List[float] = []
         with open(pose_path, "r") as f:
             for raw in f:
                 line = raw.strip()
@@ -63,15 +105,21 @@ class Generic_Handler:
                         raise ValueError(
                             f"TUM pose line has {len(parts)} values (expected 8): {line[:80]}"
                         )
+                    stamps.append(float(parts[0]))
                     tx, ty, tz = map(float, parts[1:4])
                     qx, qy, qz, qw = map(float, parts[4:8])
                     T = np.eye(4, dtype=np.float64)
                     T[:3, :3] = self._quaternion_to_rotation_matrix(qx, qy, qz, qw)
                     T[:3, 3] = [tx, ty, tz]
                 poses.append(T)
+        if fmt == "kitti":
+            stamps = self._timestamps_beside(dataset_dir, len(poses))
         if self.verbose:
-            print(f"  [Generic_Handler] loaded {len(poses)} poses ({fmt}) from {pose_path.name}")
-        return poses
+            where = "" if not stamps else (
+                " with timestamps" if fmt == "tum" else " + poses_tum.txt timestamps")
+            print(f"  [Generic_Handler] loaded {len(poses)} poses ({fmt}) "
+                  f"from {pose_path.name}{where}")
+        return poses, stamps
 
     # ------------------------------------------------------------------
     # Scan discovery / loading
@@ -131,8 +179,9 @@ class Generic_Handler:
             dict with keys shaped like HeLiPR_Handler.load_helipr:
                 "poses": list[np.ndarray(4,4) float64]  (length M)
                 "point_clouds": list[np.ndarray(N_i, 3) float32]  (length M)
-                "pose_timestamps": list[float] (zeros, present for API parity)
-                "pc_timestamps":   list[float] (zeros, present for API parity)
+                "pose_timestamps": list[float] (TUM column 0 when the dataset
+                                   has it, else zeros -- KITTI carries none)
+                "pc_timestamps":   list[float] (same; one keyframe per submap)
         """
         dataset_dir = Path(dataset_dir)
         if n_scans < 1:
@@ -144,7 +193,7 @@ class Generic_Handler:
 
         from inlier.eval.submaps import submap_windows
 
-        poses = self.load_poses(dataset_dir)
+        poses, stamps = self.load_poses(dataset_dir)
         scan_files = self.list_scan_files(dataset_dir)
         if len(poses) != len(scan_files):
             raise RuntimeError(
@@ -169,6 +218,7 @@ class Generic_Handler:
 
         submap_poses: List[np.ndarray] = []
         submap_points: List[np.ndarray] = []
+        submap_stamps: List[float] = []
 
         import tqdm  # lazy
         iterator = tqdm.tqdm(
@@ -196,6 +246,9 @@ class Generic_Handler:
             submap = np.vstack(window_pts)
             submap_points.append(submap)
             submap_poses.append(ref_pose)
+            ## keyframe-aligned: a window whose scans were all empty is
+            ## skipped above, so appending here keeps all three in step
+            submap_stamps.append(stamps[s] if stamps else 0.0)
 
         if self.verbose:
             scope = ("" if select is None
@@ -206,12 +259,11 @@ class Generic_Handler:
                 f"{len(poses)} scans in {dataset_dir.name}"
             )
 
-        zeros = [0.0] * len(submap_points)
         return {
             "poses": submap_poses,
             "point_clouds": submap_points,
-            "pose_timestamps": zeros,
-            "pc_timestamps": zeros,
+            "pose_timestamps": submap_stamps,
+            "pc_timestamps": list(submap_stamps),
         }
 
     # ------------------------------------------------------------------

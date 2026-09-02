@@ -303,3 +303,55 @@ def test_radius_below_the_gt_distance_is_rejected(session, tmp_path):
     with pytest.raises(ValueError, match="smaller than"):
         run(_spec(session, tmp_path, gtmod.Exclusion(frames=3),
                   search_radius=GT_RADIUS / 2))
+
+
+# --- exclusion units the data cannot support -------------------------------
+
+
+class _NoTimestampSource(_CachedSource):
+    """What the generic loader hands back: zeros 'for API parity'."""
+
+    def __init__(self, tag, n):
+        super().__init__(tag)
+        self._n = n
+
+    def load(self):
+        from inlier.eval.datasets.base import Sequence
+
+        return Sequence(poses=[np.eye(4)] * self._n,
+                        point_clouds=[np.zeros((1, 3))] * self._n)
+
+
+def test_seconds_window_on_a_dataset_without_timestamps(session, tmp_path):
+    """Zeros must be rejected as absent, not silently read as t=0.
+
+    Every cutoff would collapse to 0, no frame would ever query, and the run
+    would then fail complaining that the *window* is too long -- which sends
+    the reader looking in exactly the wrong place.
+    """
+    cache_dir, source, resolved, _, _ = session
+    spec = OnlineLCDSpec(
+        resolved=resolved, source=_NoTimestampSource(source.tag, N_FRAMES),
+        exclusion=gtmod.Exclusion(seconds=30.0), output_dir=tmp_path,
+        max_pose_dist=GT_RADIUS, cache_dir=cache_dir, verbose=False, tag="t")
+
+    with pytest.raises(ValueError, match="no usable pose timestamps"):
+        run(spec)
+
+
+def test_metres_window_on_a_stationary_sequence(session, tmp_path, monkeypatch):
+    """A trajectory that never moves cannot carry a distance window either."""
+    import inlier.eval.protocols.online_lcd as mod
+
+    monkeypatch.setattr(mod, "arc_length",
+                        lambda positions: np.zeros(len(positions)))
+    with pytest.raises(ValueError, match="no usable travelled distance"):
+        run(_spec(session, tmp_path, gtmod.Exclusion(metres=50.0)))
+
+
+def test_metres_window_works_on_a_moving_sequence(session, tmp_path):
+    """The guard must not fire on a real trajectory."""
+    res = run(_spec(session, tmp_path, gtmod.Exclusion(metres=STEP * 3))).results
+    assert res["config"]["exclusion"] == {"unit": "metres",
+                                          "value": pytest.approx(STEP * 3)}
+    assert res["dataset"]["n_queried"] > 0

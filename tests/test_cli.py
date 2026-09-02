@@ -600,10 +600,25 @@ def test_online_lcd_is_registered(capsys):
     assert "loop closure" in out.lower()
 
 
-def test_online_lcd_requires_a_dataset(capsys):
-    code, out = _run(capsys, "eval", "online-lcd", "--sequence", "Roundabout01")
+@pytest.mark.parametrize("argv", [
+    ("eval", "online-lcd", "--sequence", "Roundabout01"),
+    ("eval", "online-lcd", "--dataset-type", "generic"),
+])
+def test_online_lcd_requires_a_dataset(capsys, argv):
+    """Both loaders name their input with --dataset; there is one sequence."""
+    code, out = _run(capsys, *argv)
     assert code == 1
     assert "--dataset" in out.err
+    assert "Traceback" not in out.err
+
+
+def test_online_lcd_generic_takes_dataset_as_the_path(capsys, tmp_path):
+    """--dataset is the sequence directory for generic, not a second flag."""
+    code, out = _run(capsys, "eval", "online-lcd", "--dataset-type", "generic",
+                     "--dataset", str(tmp_path / "missing"))
+    ## gets past argument validation and into the loader
+    assert code == 1
+    assert "--dataset" not in out.err
     assert "Traceback" not in out.err
 
 

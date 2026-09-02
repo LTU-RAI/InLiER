@@ -94,6 +94,9 @@ def _exclusion_inputs(spec: OnlineLCDSpec, enc: EncodedSequence
     asked for.
     """
     unit = spec.exclusion.unit
+    if unit == "frames":
+        return None, None
+
     if unit == "seconds":
         _log(spec, "  exclusion is in seconds; loading the sequence for timestamps")
         ts = np.asarray(spec.source.load().pose_timestamps, dtype=np.float64)
@@ -105,10 +108,27 @@ def _exclusion_inputs(spec: OnlineLCDSpec, enc: EncodedSequence
                 "pose timestamps are not non-decreasing; Exclusion(seconds=) "
                 "resolves its cutoff by binary search and needs sorted input. "
                 "Use --exclusion frames=N or metres=M instead.")
-        return ts, None
-    if unit == "metres":
-        return None, arc_length(enc.positions)
-    return None, None
+        axis, what = ts, "pose timestamps"
+    else:
+        axis, what = arc_length(enc.positions), "travelled distance"
+
+    # A flat axis silently collapses every cutoff to 0: nothing is ever
+    # searchable, the ground truth comes out empty, and the run then fails
+    # complaining about the window length.  The generic loader in particular
+    # fills pose_timestamps with zeros "for API parity", so this is the normal
+    # outcome there rather than a corner case.  Say what is actually wrong.
+    if axis.size and float(axis[-1] - axis[0]) <= 0.0:
+        raise ValueError(
+            f"this sequence carries no usable {what} (they never advance: "
+            f"first and last are both {axis[0]:g}), so an exclusion window in "
+            f"{unit} cannot be resolved -- every cutoff would collapse to 0 "
+            f"and no frame would query the past. "
+            + ("The generic loader reports zeros for timestamps it does not "
+               "have; use --exclusion frames=N or metres=M instead."
+               if unit == "seconds" else
+               "Use --exclusion frames=N or seconds=S instead."))
+
+    return (axis, None) if unit == "seconds" else (None, axis)
 
 
 def run(spec: OnlineLCDSpec) -> RunResult:
