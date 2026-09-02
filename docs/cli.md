@@ -304,6 +304,24 @@ result file when a directory holds several; `--candidates-csv`,
 `--verify-csv`, `--db-cache`, `--q-cache` skip auto-discovery. Apart from
 `--record`, playback writes nothing.
 
+Both protocols replay with the same command — the run's JSON says which it is,
+so nothing has to be passed. A cross-session run stacks its two sessions:
+database below, query above, every edge crossing the gap.
+
+An **online-lcd** run has one session and one map, so the two axes carry
+different meanings instead:
+
+- **The map lies flat on the floor** and builds up as the session plays, which
+  is what an online run actually has. Nothing is painted there in advance —
+  the finished map would show frames the matcher had not reached yet, the
+  future leak the protocol exists to avoid.
+- **The trajectory sits above it with `z` as the frame index**, so the curve
+  climbs as the run proceeds and a closure edge joins two points *on that
+  curve*. The height an edge spans is how long the loop took to come back
+  around — the same reading as the static `trajectory_*.png`. The index is
+  scaled into the plot's z range, so only the ordering and the proportions
+  are meaningful; the axis itself is not drawn.
+
 ## Benchmarking the Backends
 
 `inlier bench cpp-vs-py` runs the *same* evaluation once per backend with the

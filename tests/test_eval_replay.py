@@ -142,3 +142,66 @@ def test_session_label_falls_back_to_the_folder_without_a_sensor():
 
     assert session_label(HELIPR) == "Ouster"
     assert session_label(GENERIC) == "campus_ouster"
+
+
+## --- single-session runs (online-lcd) ---
+
+
+def test_run_identity_accepts_a_single_session_run():
+    """One `session` block stands in for both db and query.
+
+    The replay reads two sessions because cross-session has two; an online-lcd
+    run has one, and every layer of the animation should read it.
+    """
+    from inlier.eval.playback import run_identity
+
+    described = {"dataset_type": "generic", "path": "/data/campus",
+                 "n_scans": 40, "stride": 10}
+    data = {"protocol": "online_lcd", "session": described,
+            "artifacts": {"tag": "campus_lcd", "cache": "campus_n40s10_Undistorted"}}
+
+    db, q, written = run_identity(data, None)
+    assert db is q is described
+    assert written["tag"] == "campus_lcd"
+    assert written["db_cache"] == written["q_cache"] == "campus_n40s10_Undistorted"
+    ## one session cannot have been mapped in a different frame from itself
+    assert written["db_transform"] is None
+
+
+def test_run_identity_still_prefers_the_two_session_blocks():
+    """A cross-session run must not be re-read as single-session."""
+    from inlier.eval.playback import run_identity
+
+    data = {"db": {"a": 1}, "query": {"b": 2},
+            "artifacts": {"tag": "t", "db_cache": "d", "q_cache": "q"}}
+    db, q, written = run_identity(data, None)
+    assert db == {"a": 1} and q == {"b": 2}
+    assert written["db_cache"] == "d" and written["q_cache"] == "q"
+
+
+def test_frame_index_z_spans_the_plot_range_in_order():
+    """Single-session playback puts the frame index on z.
+
+    Raw indices would run to N and leave the axes' z-limits, so they are
+    scaled; what has to survive is the ordering and the proportions, since
+    an edge's height is read as "how long the loop took".
+    """
+    import numpy as np
+
+    from inlier.eval.playback import TRAJ_Z_LIFT, Z_OFFSET, frame_index_z
+
+    z = frame_index_z(405)
+    assert z.shape == (405,)
+    assert z[0] == pytest.approx(TRAJ_Z_LIFT)
+    assert z[-1] == pytest.approx(TRAJ_Z_LIFT + Z_OFFSET)
+    assert np.all(np.diff(z) > 0)                    # strictly climbing
+    ## evenly spaced: a 10-frame gap is the same height anywhere in the run
+    assert np.allclose(np.diff(z), np.diff(z)[0])
+
+
+def test_frame_index_z_degenerate_lengths():
+    """A one-frame run must not divide by zero; an empty one stays empty."""
+    from inlier.eval.playback import TRAJ_Z_LIFT, frame_index_z
+
+    assert frame_index_z(1).tolist() == [pytest.approx(TRAJ_Z_LIFT)]
+    assert frame_index_z(0).shape == (0,)

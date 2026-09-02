@@ -248,6 +248,10 @@ def load_results_json(run_dir: Path, explicit: Path | None) -> tuple[Path, dict]
 def run_identity(data: dict, dataset_root) -> tuple[dict, dict, dict]:
     """``(db, query, artifacts)`` for this run, whichever schema wrote it.
 
+    A single-session run records one ``session`` block instead of ``db`` and
+    ``query``; it is returned for both, which is what makes the rest of the
+    replay work unchanged.
+
     A current run records its loaders and its own file naming, so nothing has
     to be guessed.  Runs from 0.2.x recorded neither -- they were all HeLiPR,
     and playback rebuilt the names from ``config/db_sequence``.  The published
@@ -255,6 +259,15 @@ def run_identity(data: dict, dataset_root) -> tuple[dict, dict, dict]:
     reconstruction stays as a fallback instead of being deleted; it needs
     ``--dataset``, which those runs also did not record.
     """
+    if "session" in data and "artifacts" in data:
+        # Single-session protocols (online-lcd): the database *is* the query
+        # sequence, so both layers read the same loader and the same cache.
+        session, art = data["session"], data["artifacts"]
+        cache = art.get("cache")
+        return session, session, {"tag": art.get("tag", ""),
+                                  "db_cache": cache, "q_cache": cache,
+                                  "db_transform": None}
+
     if all(k in data for k in ("db", "query", "artifacts")):
         return data["db"], data["query"], data["artifacts"]
 
@@ -298,6 +311,22 @@ def score_threshold_from_results(data: dict) -> float:
     """
     thr = data.get("confusion", {}).get("threshold")
     return float(thr) if thr is not None else float("-inf")
+
+
+def frame_index_z(n_frames: int, lift: float = TRAJ_Z_LIFT,
+                  span: float = Z_OFFSET) -> np.ndarray:
+    """Per-frame z that carries the frame index, for single-session playback.
+
+    Time goes on z: the trajectory climbs as the run proceeds, so the height a
+    closure edge spans is how many frames the loop took to come back around.
+    Raw indices would run to N and blow past the z-limits the box aspect is
+    built around, so they are scaled onto ``[lift, lift + span]``.  Only the
+    ordering and the proportions carry meaning -- the axis is not drawn.
+    """
+    if n_frames <= 0:
+        return np.zeros(0, dtype=float)
+    return lift + (np.arange(n_frames, dtype=float)
+                   / max(n_frames - 1, 1)) * span
 
 
 def token_grid_from_cfg(cfg: dict) -> tuple:
@@ -365,6 +394,9 @@ def main(argv=None):
     cfg = results["config"]
     db_described, q_described, written = run_identity(results, args.dataset)
     THRESHOLD = score_threshold_from_results(results)
+    ## Shape, not a protocol whitelist: any single-session protocol writes one
+    ## `session` block, and every one of them replays the same way.
+    SINGLE_SESSION = "session" in results
 
     # The run recorded its own file naming, so nothing here reconstructs it.
     pair_tag = written["tag"]
@@ -379,12 +411,15 @@ def main(argv=None):
     q_cache = args.q_cache or find_cache(args.cache_dir, written["q_cache"])
 
     NH, NR, NA, NS = token_grid_from_cfg(cfg)
-    print(f"Pair: {pair_tag}")
+    print(f"{'Session' if SINGLE_SESSION else 'Pair'}: {pair_tag}")
     print(f"  results    : {results_json.name}")
     print(f"  candidates : {candidates_csv}")
     print(f"  verify     : {verify_csv}{'' if verify_csv.exists() else '  (missing — panel shows GT frame only)'}")
-    print(f"  DB cache   : {db_cache}")
-    print(f"  Q  cache   : {q_cache}")
+    if SINGLE_SESSION:
+        print(f"  cache      : {q_cache}")
+    else:
+        print(f"  DB cache   : {db_cache}")
+        print(f"  Q  cache   : {q_cache}")
     print(f"  token grid : NH={NH} NR={NR} NA={NA} NS={NS}")
 
     # ── Descriptor caches ────────────────────────────────────────────────────
@@ -411,10 +446,14 @@ def main(argv=None):
     # ── Raw scans via the run's own loader (per-keyframe, sensor frame) ──────
     # Rebuilt from what the eval recorded, so a generic run replays with the
     # submap accumulation it was evaluated with and nothing has to be retyped.
-    print("Loading DB scans…")
-    db_clouds = load_clouds(db_described, args.dataset)
-    print("Loading Q scans…")
-    q_clouds = load_clouds(q_described, args.dataset)
+    if SINGLE_SESSION:
+        print("Loading session scans…")
+        db_clouds = q_clouds = load_clouds(q_described, args.dataset)
+    else:
+        print("Loading DB scans…")
+        db_clouds = load_clouds(db_described, args.dataset)
+        print("Loading Q scans…")
+        q_clouds = load_clouds(q_described, args.dataset)
     if len(db_clouds) < len(db_poses_world) or len(q_clouds) < N_q_kf:
         print(f"  [warn] scan count (DB {len(db_clouds)}, Q {len(q_clouds)}) < "
               f"cache keyframes (DB {len(db_poses_world)}, Q {N_q_kf}); "
@@ -501,6 +540,29 @@ def main(argv=None):
     db_traj_z = TRAJ_Z_LIFT
     q_traj_z  = Z_OFFSET + TRAJ_Z_LIFT  # trajectory above Q map
 
+    # Per-index z for every drawn element, so the two layouts differ only in
+    # these three lookups and every draw call below stays shared.
+    #
+    # Cross-session stacks two sessions: DB map and trajectory on the floor,
+    # query map and trajectory at Z_OFFSET, every edge crossing the gap.
+    #
+    # A single session has one trajectory and one map, so the two axes carry
+    # different meanings instead: the map lies flat on the floor and builds up
+    # as the session plays, while z along the *trajectory* is the frame index.
+    # The curve climbs as the run proceeds and a closure edge joins two points
+    # on it, its height being how long the loop took to come back around.  The
+    # index is normalised into the existing z range so the zlim and box aspect
+    # set above still hold.
+    if SINGLE_SESSION:
+        q_traj_zs = frame_index_z(N_q_kf)
+        db_traj_zs = q_traj_zs          # the database *is* this trajectory
+        q_map_z = 0.0                   # scans build the floor map
+    else:
+        q_traj_zs = np.full(N_q_kf, q_traj_z)
+        db_traj_zs = np.full(len(db_poses_world), db_traj_z)
+        q_map_z = Z_OFFSET
+    traj_color = DB_TRAJ_COLOR if SINGLE_SESSION else Q_TRAJ_COLOR
+
     # Zoom: tighten xy limits around the scene centre
     all_xy = np.r_[db_xy, q_xy]
     cx, cy = all_xy.mean(axis=0)
@@ -516,14 +578,21 @@ def main(argv=None):
     z_axis_scale = (box_x / (2 * half_x)) / (box_z / (Z_OFFSET + 3.0))
 
     # ── DB layer (drawn once) ────────────────────────────────────────────────
-    db_map = build_map(db_clouds, db_poses_world, DB_VOXEL_SIZE, DB_MAP_STRIDE,
-                       desc="Building DB prior map")
-    print(f"  DB map: {len(db_map)} pts")
-    ax.scatter(db_map[:, 0], db_map[:, 1], np.zeros(len(db_map)),
-               c=DB_MAP_COLOR, s=DB_MAP_POINT_SIZE, alpha=DB_MAP_ALPHA, linewidths=0,
-               depthshade=False)
-    ax.plot(db_xy[:, 0], db_xy[:, 1], np.full(len(db_xy), db_traj_z),
-            color=DB_TRAJ_COLOR, linewidth=TRAJ_LW, zorder=10)
+    if SINGLE_SESSION:
+        # No prior map to draw: the map is built as the session streams, which
+        # is the upper layer.  Painting the finished map underneath would show
+        # frames the matcher had not reached yet -- the exact future leak the
+        # protocol exists to avoid.
+        print("  Single session: the map accumulates as it plays.")
+    else:
+        db_map = build_map(db_clouds, db_poses_world, DB_VOXEL_SIZE, DB_MAP_STRIDE,
+                           desc="Building DB prior map")
+        print(f"  DB map: {len(db_map)} pts")
+        ax.scatter(db_map[:, 0], db_map[:, 1], np.zeros(len(db_map)),
+                   c=DB_MAP_COLOR, s=DB_MAP_POINT_SIZE, alpha=DB_MAP_ALPHA,
+                   linewidths=0, depthshade=False)
+        ax.plot(db_xy[:, 0], db_xy[:, 1], np.full(len(db_xy), db_traj_z),
+                color=DB_TRAJ_COLOR, linewidth=TRAJ_LW, zorder=10)
 
     # ── Per-keyframe local scans (sensor frame). One scan per keyframe. ───────
     def get_q_local(i: int) -> np.ndarray:
@@ -548,7 +617,7 @@ def main(argv=None):
 
     def update_pose_axes(idx: int):
         T = q_poses_world[idx]
-        origin = np.array([T[0, 3], T[1, 3], q_traj_z])
+        origin = np.array([T[0, 3], T[1, 3], q_traj_zs[idx]])
         R = T[:3, :3]
         for k, line in enumerate(pose_axes):
             d = R[:, k] * AXIS_LEN
@@ -561,8 +630,8 @@ def main(argv=None):
 
     update_pose_axes(0)
 
-    q_traj_line, = ax.plot([q_xy[0, 0]], [q_xy[0, 1]], [q_traj_z],
-                           color=Q_TRAJ_COLOR, linewidth=TRAJ_LW, zorder=11)
+    q_traj_line, = ax.plot([q_xy[0, 0]], [q_xy[0, 1]], [q_traj_zs[0]],
+                           color=traj_color, linewidth=TRAJ_LW, zorder=11)
 
     frame_artists: dict[int, list] = {i: [] for i in range(N_q_kf)}
     drawn_frames: set[int] = set()
@@ -581,8 +650,10 @@ def main(argv=None):
 
     state = {"i": -1, "tp": 0, "fp": 0, "playing": False}
 
+    frame_word = "Frame" if SINGLE_SESSION else "Q keyframe"
+
     def update_title():
-        title.set_text(f"Q keyframe {state['i']+1}/{N_q_kf}    "
+        title.set_text(f"{frame_word} {state['i']+1}/{N_q_kf}    "
                        f"TP {state['tp']}    FP {state['fp']}    "
                        f"[{'PLAYING' if state['playing'] else 'PAUSED'}]")
 
@@ -591,14 +662,13 @@ def main(argv=None):
             return
         artists = []
         seg = q_xy[: i + 1]
-        q_traj_line.set_data_3d(seg[:, 0], seg[:, 1],
-                                np.full(len(seg), q_traj_z))
+        q_traj_line.set_data_3d(seg[:, 0], seg[:, 1], q_traj_zs[: i + 1])
         update_pose_axes(i)
 
         sub = get_q_world(i)
         if len(sub):
             sc = ax.scatter(sub[:, 0], sub[:, 1],
-                            np.full(len(sub), Z_OFFSET),
+                            np.full(len(sub), q_map_z),
                             c=Q_MAP_COLOR, s=Q_MAP_POINT_SIZE, alpha=Q_MAP_ALPHA,
                             linewidths=0, depthshade=False)
             artists.append(sc)
@@ -609,7 +679,7 @@ def main(argv=None):
             ln, = ax.plot(
                 [q_xy[i, 0], db_xy[dbi, 0]],
                 [q_xy[i, 1], db_xy[dbi, 1]],
-                [q_traj_z, db_traj_z],
+                [q_traj_zs[i], db_traj_zs[dbi]],
                 color=color, linewidth=LOOP_EDGE_LW, alpha=alpha, zorder=12,
             )
             artists.append(ln)
@@ -649,7 +719,7 @@ def main(argv=None):
         qkp = kp_world(i, q_off, q_kp_sensor, q_poses_world)
         if len(qkp):
             sc = ax.scatter(qkp[:, 0], qkp[:, 1],
-                            np.full(len(qkp), Z_OFFSET),
+                            np.full(len(qkp), q_map_z),
                             c=Q_KP_COLOR, s=KP_SIZE, alpha=KP_ALPHA,
                             linewidths=0, depthshade=False, zorder=15)
             current_kp_artists.append(sc)
@@ -753,7 +823,7 @@ def main(argv=None):
                        loc="upper right", bbox_to_anchor=(-0.05, 1.0))
 
         if SHOW_PANEL_TITLE:
-            ptitle = f"Q kf {i + 1}/{N_q_kf}"
+            ptitle = f"{'Frame' if SINGLE_SESSION else 'Q kf'} {i + 1}/{N_q_kf}"
             if err_lines:
                 ptitle += "\n" + "\n".join(err_lines)
             ax2.set_title(ptitle, fontsize=PANEL_TITLE_FONTSIZE)
@@ -869,10 +939,11 @@ def main(argv=None):
             if target >= 0:
                 seg = q_xy[: target + 1]
                 q_traj_line.set_data_3d(seg[:, 0], seg[:, 1],
-                                        np.full(len(seg), q_traj_z))
+                                        q_traj_zs[: target + 1])
                 update_pose_axes(target)
             else:
-                q_traj_line.set_data_3d([q_xy[0, 0]], [q_xy[0, 1]], [q_traj_z])
+                q_traj_line.set_data_3d([q_xy[0, 0]], [q_xy[0, 1]],
+                                        [q_traj_zs[0]])
                 update_pose_axes(0)
         state["i"] = target
         refresh_keypoints(target)
@@ -911,11 +982,19 @@ def main(argv=None):
 
     fig.canvas.mpl_connect("key_press_event", on_key)
 
-    legend = [
-        Line2D([0], [0], color=DB_TRAJ_COLOR, lw=TRAJ_LW,
-               label=f"DB: {session_label(db_described)}"),
-        Line2D([0], [0], color=Q_TRAJ_COLOR,  lw=TRAJ_LW,
-               label=f"Query: {session_label(q_described)}"),
+    if SINGLE_SESSION:
+        # One trajectory, so one entry: listing it twice as DB and Query would
+        # name the same curve under two roles it does not have here.
+        legend = [Line2D([0], [0], color=traj_color, lw=TRAJ_LW,
+                         label=f"Session: {session_label(q_described)}")]
+    else:
+        legend = [
+            Line2D([0], [0], color=DB_TRAJ_COLOR, lw=TRAJ_LW,
+                   label=f"DB: {session_label(db_described)}"),
+            Line2D([0], [0], color=Q_TRAJ_COLOR,  lw=TRAJ_LW,
+                   label=f"Query: {session_label(q_described)}"),
+        ]
+    legend += [
         Line2D([0], [0], color=TP_COLOR, lw=LOOP_EDGE_LW, label="TP"),
         Line2D([0], [0], color=FP_COLOR, lw=LOOP_EDGE_LW, label="FP"),
     ]
