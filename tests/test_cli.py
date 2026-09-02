@@ -208,6 +208,69 @@ def test_encode_viz_save_on_a_directory_writes_one_figure_per_scan(
     assert (figures / f"{scan_file.stem}.png").exists()
 
 
+# --- bench ------------------------------------------------------------------
+# `inlier bench` re-invokes the CLI once per backend.  The common flags are
+# declared on every subparser, so they are consumed here rather than left among
+# the leftovers -- they have to be put back explicitly or the benchmarked run
+# is not the run that was asked for.
+
+def test_forwarded_global_flags_round_trip():
+    import argparse
+
+    from inlier.cli._common import forwarded_global_flags
+
+    args = argparse.Namespace(config="mine.yaml", overrides=["stage1.topk=50"],
+                              quiet=True, verbose=False, backend="python")
+    assert forwarded_global_flags(args) == [
+        "--config", "mine.yaml", "--set", "stage1.topk=50", "--quiet"]
+
+
+def test_forwarded_global_flags_omits_backend():
+    """`inlier bench` sets the backend per subprocess; forwarding it would win."""
+    import argparse
+
+    from inlier.cli._common import forwarded_global_flags
+
+    args = argparse.Namespace(config=None, overrides=[], quiet=False,
+                              verbose=False, backend="python")
+    assert forwarded_global_flags(args) == []
+
+
+def test_bench_forwards_the_config_flags(capsys, monkeypatch):
+    from inlier.eval import benchmark
+
+    seen = {}
+
+    def _capture(argv):
+        seen["argv"] = argv
+        return 0
+
+    monkeypatch.setattr(benchmark, "main", _capture)
+
+    code, _ = _run(capsys, "bench", "cpp-vs-py", "--config", "mine.yaml",
+                   "--set", "stage1.topk=50", "--dataset", "/data")
+    assert code == 0
+    assert seen["argv"] == ["--config", "mine.yaml", "--set", "stage1.topk=50",
+                            "--dataset", "/data"]
+
+
+def test_bench_without_eval_arguments_says_what_to_pass(capsys):
+    code, out = _run(capsys, "bench", "cpp-vs-py")
+    assert code == 1
+    assert "nothing to benchmark" in out.err
+    assert "--db-sequence" in out.err
+
+
+def test_bench_reports_an_ignored_backend_flag(capsys, monkeypatch):
+    from inlier.eval import benchmark
+
+    monkeypatch.setattr(benchmark, "main", lambda argv: 0)
+    code, out = _run(capsys, "bench", "cpp-vs-py", "--backend", "python",
+                     "--dataset", "/data")
+    assert code == 0
+    assert "ignoring --backend" in out.err
+
+
 # --- flag spelling ---------------------------------------------------------
 # Every flag is kebab-case; the snake_case spellings the 0.2.x README
 # documented are rewritten on argv so they keep working without doubling the

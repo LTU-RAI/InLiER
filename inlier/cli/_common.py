@@ -174,3 +174,29 @@ def kebab_flags(argv: Sequence[str]) -> List[str]:
             continue
         out.append(token)
     return out
+
+
+def forwarded_global_flags(args: argparse.Namespace) -> List[str]:
+    """The common flags in argv form, for a command that re-invokes the CLI.
+
+    :func:`add_global_flags` puts them on every subparser, so
+    ``parse_known_args`` consumes them into the namespace instead of leaving
+    them among the leftovers a forwarding command passes on -- which meant
+    ``inlier bench cpp-vs-py --config mine.yaml`` benchmarked the *default*
+    config while looking like it had honoured the flag.
+
+    ``--backend`` is deliberately not forwarded: ``inlier bench`` picks the
+    backend per subprocess through ``INLIER_FORCE_PYTHON``, and a forwarded
+    ``--backend`` would override it on one of the two runs.
+    """
+    argv: List[str] = []
+    config = getattr(args, "config", None)
+    if config:
+        argv += ["--config", str(config)]
+    for override in getattr(args, "overrides", None) or []:
+        argv += ["--set", override]
+    if getattr(args, "quiet", False):
+        argv.append("--quiet")
+    if getattr(args, "verbose", False):
+        argv.append("--verbose")
+    return argv

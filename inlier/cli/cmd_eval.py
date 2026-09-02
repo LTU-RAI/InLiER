@@ -25,7 +25,7 @@ def register(subparsers, parent) -> None:
 
 def _register_cross_session(sub, parent) -> None:
     p = sub.add_parser(
-        "cross-session", parents=[parent], aliases=["cross_session"],
+        "cross-session", parents=[parent],
         help="full database vs full query sequence (offline)",
         description=(
             "Cross-session place recognition: the whole database is visible to "

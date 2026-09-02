@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Benchmark the FULL HeLiPR evaluation: C++ core vs pure-Python reference.
 
-Runs ``evaluation/evaluate_inlier_helipr.py`` end-to-end twice — once with
-the C++ backend (default) and once with ``INLIER_FORCE_PYTHON=1`` — both
-encoding FROM SCRATCH (cache disabled), then diffs the two result JSONs.
+Runs ``inlier eval cross-session`` end-to-end twice — once with the C++
+backend (default) and once with ``INLIER_FORCE_PYTHON=1`` — both encoding
+FROM SCRATCH (cache disabled), then diffs the two result JSONs.
 
 The C++ core is a faithful port of the numpy reference, so the accuracy
 metrics (PR-AUC, Recall@N) should match to within RANSAC noise — that
@@ -12,7 +12,7 @@ C++ core pays off.
 
 Pass the usual eval arguments straight through, e.g.:
 
-    python scripts/benchmark_cpp_vs_py.py \
+    inlier bench cpp-vs-py \
         --config config/default.yaml \
         --dataset ~/Documents/datasets/HeLiPR/ \
         --db-sequence Roundabout01 --q-sequence Roundabout03 --pair O-Aeva \
@@ -245,7 +245,7 @@ def main(argv=None) -> None:
     ap = argparse.ArgumentParser(
         description="Full-eval C++ vs Python benchmark (from scratch).",
         epilog="All other args are forwarded verbatim to "
-               "evaluation/evaluate_inlier_helipr.py.")
+               "`inlier eval cross-session`.")
     ap.add_argument("--out-base", default="results/bench_cpp_vs_py",
                     help="Root for per-backend outputs and the comparison.")
     ap.add_argument("--backends", default="cpp,python",
