@@ -88,12 +88,11 @@ Replay a `DB←Q` run as an animation of the growing query trajectory, loop clos
 
 ```bash
 inlier play \
-    --dataset /path/to/HeLiPR \
-    --output-dir results/HeLiPR/dbR01-O-qR03-Aeva_vs0.5_cs1_nh10_nr20_na60_ns7 \
+    --run-dir results/HeLiPR/dbR01-O-qR03-Aeva_vs0.5_cs1_nh10_nr20_na60_ns7 \
     --cache-dir cache_inlier
 ```
 
-The run's identity (sequences, sensors, GT thresholds, score threshold) is read from the `results_*.json` in `--output-dir` — no need to repeat it on the command line.
+The run's identity — sequences, sensors, dataset root, GT thresholds, score threshold, and the tag its filenames are built from — is read from the `results_*.json` in `--output-dir`, so none of it is repeated on the command line. Pass `--dataset` only if the dataset has moved since the run.
 
 Controls: `SPACE` play/pause, `←` / `→` step. Pass `--record out.mp4` to render headlessly.
 

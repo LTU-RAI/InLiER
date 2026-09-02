@@ -284,6 +284,19 @@ class GenericSource:
             "transform": self.transform is not None,
         }
 
+    @classmethod
+    def from_describe(cls, described, *, root=None, verbose=False):
+        """Rebuild the source from what :meth:`describe` wrote into a run.
+
+        The submap accumulation (``n_scans``/``stride``) comes back with it, so
+        a replay cannot silently re-window the sequence differently from the
+        run it is replaying.  ``transform`` is not restored here: the protocol
+        applies it to the poses, not the loader (see ``cross_session.run``).
+        """
+        return cls(root or described["path"],
+                   described.get("n_scans", 1), described.get("stride"),
+                   verbose=verbose)
+
     @property
     def tag(self) -> str:
         return f"{self.path.name}_n{self.n_scans}s{self.stride}"

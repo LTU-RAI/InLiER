@@ -17,6 +17,18 @@ REGISTRY: Dict[str, Type] = {
 }
 
 
+def source_from_describe(described, *, root=None, verbose=False):
+    """Rebuild the loader a finished run used, from its results-JSON block.
+
+    ``inlier play`` replays artifacts rather than re-running anything, so it
+    needs the same scans the evaluation encoded -- including, for the generic
+    loader, the submap accumulation.  Asking the user to retype ``--n-scans``
+    and ``--stride`` would let a replay disagree with its own run.
+    """
+    return get_source(described.get("dataset_type", "helipr")).from_describe(
+        described, root=root, verbose=verbose)
+
+
 def get_source(name: str):
     """Look up a loader class by ``--dataset-type`` name."""
     try:
@@ -36,5 +48,6 @@ __all__ = [
     "Sequence",
     "SequenceSource",
     "get_source",
+    "source_from_describe",
     "load_transform",
 ]

@@ -114,6 +114,17 @@ class SequenceSource(Protocol):
         """Provenance for the results JSON (paths, sensors, accumulation)."""
         ...
 
+    @classmethod
+    def from_describe(cls, described: Dict[str, Any], *, root: Any = None,
+                      verbose: bool = False) -> "SequenceSource":
+        """Rebuild a source from a :meth:`describe` block in a results JSON.
+
+        The inverse of :meth:`describe`, so a tool that reads a finished run
+        (``inlier play``) can reload its scans without being told again how the
+        sequence was assembled.
+        """
+        ...
+
 
 def load_transform(path: Any) -> np.ndarray:
     """Read a 4x4 transform from a text file."""

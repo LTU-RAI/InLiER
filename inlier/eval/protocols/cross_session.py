@@ -61,6 +61,15 @@ class CrossSessionSpec:
     tag: str = ""
 
 
+def _cache_tag(source) -> str:
+    """The descriptor cache's name for one sequence.
+
+    ``_Undistorted`` is HeLiPR's scan-type folder.  Every loader carries it so
+    that caches written before the loader was a parameter keep their names.
+    """
+    return f"{source.tag}_Undistorted"
+
+
 def _log(spec: CrossSessionSpec, message: str = "") -> None:
     if spec.verbose:
         print(message)
@@ -93,8 +102,8 @@ def run(spec: CrossSessionSpec) -> RunResult:
     _log(spec, "\n[1/6] Encoding sequences ...")
     encoder = InLiER(r.inlier)
     t0 = time.time()
-    db = _encode(spec, encoder, spec.db_source, spec.db_source.tag + "_Undistorted", "database")
-    q = _encode(spec, encoder, spec.q_source, spec.q_source.tag + "_Undistorted", "query")
+    db = _encode(spec, encoder, spec.db_source, _cache_tag(spec.db_source), "database")
+    q = _encode(spec, encoder, spec.q_source, _cache_tag(spec.q_source), "query")
     encode_time = time.time() - t0
 
     db_positions, db_poses = db.positions, db.poses
@@ -325,6 +334,28 @@ def run(spec: CrossSessionSpec) -> RunResult:
 
 # ---------------------------------------------------------------------------
 
+def _artifact_provenance(spec: CrossSessionSpec) -> Dict[str, Any]:
+    """Where this run's own files are, and what it takes to reload its scans.
+
+    ``inlier play`` used to rebuild the artifact tag and the cache names from
+    the sequence and sensor fields -- a second copy of a naming rule that lives
+    in ``cmd_eval``, and one that produced nonsense for any loader without a
+    sensor.  Recording them removes the guess.
+
+    ``db_transform`` is the DB->query frame transform the protocol applied to
+    the database poses; the descriptor caches hold the *untransformed* ones, so
+    anything replaying them has to apply it again.
+    """
+    transform = spec.db_transform
+    return {
+        "tag": spec.tag,
+        "db_cache": _cache_tag(spec.db_source),
+        "q_cache": _cache_tag(spec.q_source),
+        "db_transform": (None if transform is None
+                         else np.asarray(transform, dtype=float).tolist()),
+    }
+
+
 def _session_label(source) -> str:
     """``sequence/sensor`` for HeLiPR, the folder name for anything else."""
     described = source.describe()
@@ -427,6 +458,7 @@ def _build_results(spec, r, db, q, matrix, n_db, n_q, n_with_gt, effective_topk,
             db=spec.db_source.describe(),
             query=spec.q_source.describe(),
             config_mode=r.mode,
+            artifacts=_artifact_provenance(spec),
         ),
         "config": {
             "db_sequence": spec.db_source.describe().get("sequence",

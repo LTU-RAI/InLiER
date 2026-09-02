@@ -77,3 +77,17 @@ inlier eval cross-session --dataset-type generic \
 ```
 
 `--transform` defaults to `<db_path>/transform.txt` if present, and `--no-transform` disables it when both sequences already share a world frame. Outputs match the HeLiPR driver: `results_*.json`, `candidates_*.csv`, `ranked_*.csv`, the per-pair verify poses and the trajectory plot land under `--output-dir`; the descriptor caches go to `--cache-dir`.
+
+## Playback
+
+`inlier play` replays a generic run the same way it replays a HeLiPR one:
+
+```bash
+inlier play \
+    --run-dir results/generic_dataset/dbcamp-db-qcamp-q_vs0.5_cs1_nh10_nr20_na60_ns7 \
+    --cache-dir cache_inlier
+```
+
+Everything it needs — the two dataset paths, `--n-db` / `--stride-db` and their query counterparts, the DB→Q transform, and the tag the filenames use — is read back out of the `results_*.json`. That is deliberate: retyping the submap accumulation would let a replay window the sequence differently from the run it is replaying. The only thing you may need to add is `--dataset`, if the folders have moved since the run.
+
+Replaying a generic run re-reads and re-accumulates every submap from the `.pcd` files (the descriptor cache spares the encoding, not the disk), so expect the load to take a while on a long sequence.

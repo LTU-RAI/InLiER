@@ -719,6 +719,18 @@ class HeLiPRSource:
             "scan_type": self.scan_type,
         }
 
+    @classmethod
+    def from_describe(cls, described, *, root=None, verbose=False):
+        """Rebuild the source from what :meth:`describe` wrote into a run.
+
+        ``root`` overrides the recorded dataset path, for replaying a run whose
+        dataset has since moved.
+        """
+        return cls(root or described["dataset_path"],
+                   described["sequence"], described["sensor"],
+                   scan_type=described.get("scan_type", "Undistorted"),
+                   verbose=verbose)
+
     @property
     def tag(self) -> str:
         return f"{self.sequence}_{self.sensor}"

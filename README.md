@@ -122,8 +122,7 @@ inlier eval cross-session \
 
 # 4. replay it
 inlier play \
-    --dataset /path/to/HeLiPR \
-    --output-dir results/HeLiPR/dbR01-O-qR03-Aeva_vs0.5_cs1_nh10_nr20_na60_ns7 \
+    --run-dir results/HeLiPR/dbR01-O-qR03-Aeva_vs0.5_cs1_nh10_nr20_na60_ns7 \
     --cache-dir cache_inlier
 ```
 

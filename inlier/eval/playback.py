@@ -1,8 +1,5 @@
 #!/usr/bin/env python3
-"""
-playback_evaluation.py
-
-Animated replay of a HeLiPR DB<->Query place-recognition run.
+"""``inlier play`` -- animated replay of a finished evaluation run.
 
   - DB map + DB trajectory drawn once (full prior).
   - Q trajectory, Q scan, Q keypoints reveal incrementally per keyframe.
@@ -12,27 +9,37 @@ Animated replay of a HeLiPR DB<->Query place-recognition run.
     verify pose, plus MINT / BEAM descriptor visualisations.
   - Controls: SPACE play/pause, LEFT/RIGHT step.
 
-It consumes the artifacts written by ``evaluate_inlier_helipr.py``:
-  - ``results_{pair_tag}.json``        (run identity + token grid)
-  - ``candidates_{pair_tag}.csv``       (loop closures + TP/FP labels)
-  - ``per_pair_verify_{pair_tag}.csv``  (per-pair estimated poses; optional)
-  - ``desc_{seq}_{sensor}_{type}_*.npz`` descriptor caches (DB and Q)
-and reloads the raw scans through ``HeLiPR_Handler``.
+Loader-agnostic: it replays a HeLiPR run and a generic (.pcd + poses) run the
+same way, because it rebuilds the run's own ``SequenceSource`` from the
+provenance the evaluation wrote rather than assuming one.  For a generic run
+that means the submap accumulation comes back with it -- ``--n-scans`` and
+``--stride`` are never retyped here, so a replay cannot window the sequence
+differently from the run it is replaying.
 
-The sequences, sensors, GT thresholds, token grid and score threshold are read
-from the results JSON in --output-dir, so playback always describes the run it
-is rendering.  Only what the eval does not record is passed on the CLI: the
-dataset root, the cache dir, and the scan subfolder (--db-type / --q-type).
+It consumes the artifacts written by ``inlier eval cross-session``:
+  - ``results_{tag}.json``            (run identity, token grid, file naming)
+  - ``candidates_{tag}.csv``          (loop closures + TP/FP labels)
+  - ``per_pair_verify_{tag}.csv``     (per-pair estimated poses; optional)
+  - ``desc_{cache_tag}_*.npz``        descriptor caches (DB and Q)
+and reloads the raw scans through the loader named in the results JSON.
+
+Everything about the run's identity -- sequences, sensors or paths, submap
+accumulation, GT thresholds, token grid, score threshold, and the tag every
+filename is built from -- is read back out of the results JSON, so playback
+always describes the run it is rendering.  Only the cache directory, and a
+dataset root when the data has moved, are passed on the CLI.
+
+``--run-dir`` is the run being replayed and is read only: the sole thing this
+writes is ``--record``.
 
 The TP/FP labels are the eval's, not this script's: it renders the closures in
-candidates_{pair_tag}.csv as labelled.  To see a different set, re-run
-evaluate_inlier_helipr.py with a different --pr-threshold / GT definition.
+``candidates_{tag}.csv`` as labelled.  To see a different set, re-run the
+evaluation with a different --threshold / GT definition.
 
 Example
 -------
-python3 evaluation/playback_evaluation.py \
-    --output-dir results/HeLiPR/Ouster01_Aeva03/dbR01-O-qR03-Aeva_vs0.5_cs1_nh10_nr20_na60_ns7 \
-    --dataset ~/Documents/datasets/HeLiPR \
+inlier play \
+    --run-dir results/HeLiPR/dbR01-O-qR03-Aeva_vs0.5_cs1_nh10_nr20_na60_ns7 \
     --cache-dir cache_inlier \
     --record /path/to/output.mp4
 """
@@ -57,7 +64,7 @@ from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
 from inlier.core.InLiER import InLiER as _InLiER
 from inlier.core.InLiER_Matcher import InLiER_Matcher as _Matcher
 from inlier.core.Dataclasses import BEAMScoreConfig as _BEAMCfg
-from inlier.eval.datasets.helipr import HeLiPR_Handler
+from inlier.eval.datasets import source_from_describe
 
 
 # ── Visualisation constants (tunable) ───────────────────────────────────────
@@ -170,21 +177,46 @@ def transform_pts(pts: np.ndarray, T: np.ndarray) -> np.ndarray:
     return pts @ T[:3, :3].T + T[:3, 3]
 
 
-def find_cache(cache_dir: Path, sequence: str, sensor: str, seq_type: str) -> Path:
-    """Locate the descriptor cache npz for a sequence/sensor/type."""
-    pattern = str(cache_dir / f"desc_{sequence}_{sensor}_{seq_type}_*.npz")
+def session_label(described: dict) -> str:
+    """How to name one session in the legend: the sensor, or the folder."""
+    return described.get("sensor") or Path(described.get("path", "")).name
+
+
+def load_clouds(described: dict, root: Path | None):
+    """Per-keyframe point clouds for one session, via the run's own loader.
+
+    One entry per *keyframe*, which for the generic loader means one per
+    accumulated submap -- matching the descriptor cache index for index, which
+    is what every panel here assumes.
+
+    Verbose on purpose: the descriptor cache spares the *encoding*, not the
+    reading, and a generic session re-accumulates every submap from its .pcd
+    files.  That is minutes of silence otherwise.
+    """
+    source = source_from_describe(described, root=root, verbose=True)
+    return source.load().point_clouds
+
+
+def find_cache(cache_dir: Path, cache_tag: str) -> Path:
+    """Locate the descriptor cache npz the run wrote under ``cache_tag``.
+
+    The tag comes from the results JSON, so this cannot disagree with the name
+    the evaluation actually used.  It differs per loader:
+    ``Roundabout01_Ouster_Undistorted`` vs ``campus_ouster_n40s5_Undistorted``.
+    """
+    pattern = str(cache_dir / f"desc_{cache_tag}_*.npz")
     hits = sorted(glob.glob(pattern), key=os.path.getmtime)
     if not hits:
         raise FileNotFoundError(
-            f"No descriptor cache matching {pattern}. Run "
-            f"evaluate_inlier_helipr.py first (it writes the cache).")
+            f"No descriptor cache matching {pattern}. Re-run `inlier eval` "
+            f"with --cache-dir {cache_dir} (it writes the cache).")
     if len(hits) > 1:
         print(f"  [cache] {len(hits)} matches for {Path(pattern).name}; "
               f"using newest: {Path(hits[-1]).name}")
     return Path(hits[-1])
 
 
-def load_results_json(output_dir: Path, explicit: Path | None) -> tuple[Path, dict]:
+def load_results_json(run_dir: Path, explicit: Path | None) -> tuple[Path, dict]:
     """Locate and load the eval results JSON; return (path, the whole document).
 
     This is the single source of truth for the run's identity (sequences,
@@ -196,27 +228,64 @@ def load_results_json(output_dir: Path, explicit: Path | None) -> tuple[Path, di
         if not path.exists():
             raise FileNotFoundError(f"Results JSON not found: {path}")
     else:
-        hits = sorted(glob.glob(str(output_dir / "results_*.json")),
+        hits = sorted(glob.glob(str(run_dir / "results_*.json")),
                       key=os.path.getmtime)
         if not hits:
             raise FileNotFoundError(
-                f"No results_*.json in {output_dir}. Run "
+                f"No results_*.json in {run_dir}. Run "
                 f"evaluate_inlier_helipr.py first, or pass --results-json.")
         if len(hits) > 1:
-            print(f"  [results] {len(hits)} results JSONs in {output_dir.name}; "
+            print(f"  [results] {len(hits)} results JSONs in {run_dir.name}; "
                   f"using newest: {Path(hits[-1]).name}  "
                   f"(pass --results-json to pin one)")
         path = Path(hits[-1])
 
     with open(path) as f:
         data = json.load(f) or {}
+    return path, data
+
+
+def run_identity(data: dict, dataset_root) -> tuple[dict, dict, dict]:
+    """``(db, query, artifacts)`` for this run, whichever schema wrote it.
+
+    A current run records its loaders and its own file naming, so nothing has
+    to be guessed.  Runs from 0.2.x recorded neither -- they were all HeLiPR,
+    and playback rebuilt the names from ``config/db_sequence``.  The published
+    results checked into this repository are still that shape, so the
+    reconstruction stays as a fallback instead of being deleted; it needs
+    ``--dataset``, which those runs also did not record.
+    """
+    if all(k in data for k in ("db", "query", "artifacts")):
+        return data["db"], data["query"], data["artifacts"]
+
     cfg = data.get("config", {})
     missing = [k for k in ("db_sequence", "db_sensor", "q_sequence", "q_sensor")
                if k not in cfg]
     if missing:
-        raise KeyError(f"{path.name} has no config/{{{','.join(missing)}}}; "
-                       f"it predates this script's expectations.")
-    return path, data
+        raise KeyError(f"results JSON has no config/{{{','.join(missing)}}} and "
+                       f"no db/query blocks; it predates every schema this "
+                       f"understands.")
+    if dataset_root is None:
+        raise ValueError(
+            "this run predates the recorded dataset path (InLiER 0.2.x); "
+            "pass --dataset <root>, or re-run `inlier eval` to refresh it.")
+
+    def _helipr(sequence, sensor):
+        return {"dataset_type": "helipr", "dataset_path": str(dataset_root),
+                "sequence": sequence, "sensor": sensor,
+                "scan_type": "Undistorted"}
+
+    tag = (f"{cfg['db_sequence']}_{cfg['db_sensor']}_"
+           f"{cfg['q_sequence']}_{cfg['q_sensor']}_"
+           f"ov{cfg['overlap_threshold']}_pd{cfg['max_pose_dist']}m")
+    return (
+        _helipr(cfg["db_sequence"], cfg["db_sensor"]),
+        _helipr(cfg["q_sequence"], cfg["q_sensor"]),
+        {"tag": tag,
+         "db_cache": f"{cfg['db_sequence']}_{cfg['db_sensor']}_Undistorted",
+         "q_cache": f"{cfg['q_sequence']}_{cfg['q_sensor']}_Undistorted",
+         "db_transform": None},
+    )
 
 
 def score_threshold_from_results(data: dict) -> float:
@@ -241,25 +310,21 @@ def token_grid_from_cfg(cfg: dict) -> tuple:
 # ── Main ────────────────────────────────────────────────────────────────────
 def main(argv=None):
     ap = argparse.ArgumentParser(
-        description="Animated replay of a HeLiPR InLiER evaluation run.")
+        description="Animated replay of an InLiER evaluation run.")
     # Eval outputs — the run's identity (sequences, sensors, GT thresholds,
     # token grid) is read from results_*.json here, never passed on the CLI.
-    ap.add_argument("--output-dir", type=Path, required=True,
-                    help="Eval output folder (results JSON + CSVs live here).")
+    ap.add_argument("--run-dir", type=Path, required=True,
+                    help="The finished run to replay: the folder `inlier eval` "
+                         "wrote its results JSON and CSVs into. Read only; "
+                         "playback writes nothing except --record.")
     ap.add_argument("--results-json", type=Path, default=None,
                     help="Pin a specific results_*.json (default: newest in "
-                         "--output-dir).")
+                         "--run-dir).")
     # Things the eval run does not record
-    ap.add_argument("--dataset", type=Path,
-                    default=Path("~/Documents/datasets/HeLiPR").expanduser(),
-                    help="HeLiPR dataset root (contains the sequence folders).")
+    ap.add_argument("--dataset", type=Path, default=None,
+                    help="Dataset root, if it has moved since the run. "
+                         "Defaults to the path recorded in the results JSON.")
     ap.add_argument("--cache-dir", type=Path, default=Path("cache_inlier"))
-    ap.add_argument("--db-type", default="Undistorted",
-                    help="Scan subfolder / cache tag; must match the seq_type "
-                         "evaluate_inlier_helipr.py encoded with.")
-    ap.add_argument("--q-type", default="Undistorted",
-                    help="Scan subfolder / cache tag; must match the seq_type "
-                         "evaluate_inlier_helipr.py encoded with.")
     # Explicit overrides (skip auto-discovery)
     ap.add_argument("--candidates-csv", type=Path, default=None)
     ap.add_argument("--verify-csv", type=Path, default=None)
@@ -296,27 +361,22 @@ def main(argv=None):
     SCORE_COL = args.score_col
 
     # ── Run identity: read from the eval's own results JSON ──────────────────
-    results_json, results = load_results_json(args.output_dir, args.results_json)
+    results_json, results = load_results_json(args.run_dir, args.results_json)
     cfg = results["config"]
-    db_sequence, db_sensor = cfg["db_sequence"], cfg["db_sensor"]
-    q_sequence,  q_sensor  = cfg["q_sequence"],  cfg["q_sensor"]
+    db_described, q_described, written = run_identity(results, args.dataset)
     THRESHOLD = score_threshold_from_results(results)
 
-    pair_tag = (f"{db_sequence}_{db_sensor}_"
-                f"{q_sequence}_{q_sensor}_"
-                f"ov{cfg['overlap_threshold']}_pd{cfg['max_pose_dist']}m")
-
+    # The run recorded its own file naming, so nothing here reconstructs it.
+    pair_tag = written["tag"]
     candidates_csv = args.candidates_csv or (
-        args.output_dir / f"candidates_{pair_tag}.csv")
+        args.run_dir / f"candidates_{pair_tag}.csv")
     verify_csv = args.verify_csv or (
-        args.output_dir / f"per_pair_verify_{pair_tag}.csv")
+        args.run_dir / f"per_pair_verify_{pair_tag}.csv")
     if not candidates_csv.exists():
         raise FileNotFoundError(f"Candidates CSV not found: {candidates_csv}")
 
-    db_cache = args.db_cache or find_cache(
-        args.cache_dir, db_sequence, db_sensor, args.db_type)
-    q_cache = args.q_cache or find_cache(
-        args.cache_dir, q_sequence, q_sensor, args.q_type)
+    db_cache = args.db_cache or find_cache(args.cache_dir, written["db_cache"])
+    q_cache = args.q_cache or find_cache(args.cache_dir, written["q_cache"])
 
     NH, NR, NA, NS = token_grid_from_cfg(cfg)
     print(f"Pair: {pair_tag}")
@@ -330,9 +390,15 @@ def main(argv=None):
     # ── Descriptor caches ────────────────────────────────────────────────────
     db_npz = np.load(db_cache)
     q_npz  = np.load(q_cache)
-    # Poses are already in the shared HeLiPR global frame (no inter-transform).
     db_poses_world = np.asarray(db_npz["poses"], dtype=np.float64)
     q_poses_world  = np.asarray(q_npz["poses"], dtype=np.float64)
+    # HeLiPR sequences already share a global frame; two independently mapped
+    # generic sequences do not.  The cache holds the DB poses as loaded, and
+    # the protocol applied the DB->query transform afterwards -- so a replay
+    # reading the cache has to apply the same one to see the same trajectories.
+    db_transform = written.get("db_transform")
+    if db_transform is not None:
+        db_poses_world = np.asarray(db_transform, dtype=np.float64) @ db_poses_world
     db_off, db_kp_sensor = db_npz["offsets"], db_npz["kp_sensor"]
     q_off,  q_kp_sensor  = q_npz["offsets"],  q_npz["kp_sensor"]
     db_tokens = db_npz["token_ids"]
@@ -342,14 +408,13 @@ def main(argv=None):
     q_xy  = q_poses_world[:, :2, 3]
     N_q_kf = len(q_poses_world)
 
-    # ── Raw scans via the handler (per-keyframe, sensor frame) ───────────────
-    handler = HeLiPR_Handler(dataset_path=str(args.dataset), verbose=False)
+    # ── Raw scans via the run's own loader (per-keyframe, sensor frame) ──────
+    # Rebuilt from what the eval recorded, so a generic run replays with the
+    # submap accumulation it was evaluated with and nothing has to be retyped.
     print("Loading DB scans…")
-    db_data = handler.load_helipr(db_sequence, db_sensor, type=args.db_type)
+    db_clouds = load_clouds(db_described, args.dataset)
     print("Loading Q scans…")
-    q_data  = handler.load_helipr(q_sequence, q_sensor, type=args.q_type)
-    db_clouds = db_data["point_clouds"]
-    q_clouds  = q_data["point_clouds"]
+    q_clouds = load_clouds(q_described, args.dataset)
     if len(db_clouds) < len(db_poses_world) or len(q_clouds) < N_q_kf:
         print(f"  [warn] scan count (DB {len(db_clouds)}, Q {len(q_clouds)}) < "
               f"cache keyframes (DB {len(db_poses_world)}, Q {N_q_kf}); "
@@ -848,9 +913,9 @@ def main(argv=None):
 
     legend = [
         Line2D([0], [0], color=DB_TRAJ_COLOR, lw=TRAJ_LW,
-               label=f"DB: {db_sensor}"),
+               label=f"DB: {session_label(db_described)}"),
         Line2D([0], [0], color=Q_TRAJ_COLOR,  lw=TRAJ_LW,
-               label=f"Query: {q_sensor}"),
+               label=f"Query: {session_label(q_described)}"),
         Line2D([0], [0], color=TP_COLOR, lw=LOOP_EDGE_LW, label="TP"),
         Line2D([0], [0], color=FP_COLOR, lw=LOOP_EDGE_LW, label="FP"),
     ]
