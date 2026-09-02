@@ -267,6 +267,7 @@ class PyMatcher {
     m_.Add(database_id, TokenArrayToVector(token_id));
   }
   void Reset() { m_.Reset(); }
+  void Reserve(size_t n) { m_.Reserve(n); }
   void Finalize() {
     py::gil_scoped_release release;
     m_.Finalize();
@@ -296,10 +297,11 @@ class PyMatcher {
 
   inlier::ShortlistResult Shortlist(const Arr<uint64_t> &q_tid,
                                     const inlier::ShortlistConfig &cfg,
-                                    int topk, double topk_pct) {
+                                    int topk, double topk_pct,
+                                    int64_t max_db_index) {
     const auto q = TokenArrayToVector(q_tid);
     py::gil_scoped_release release;
-    return m_.Shortlist(q, cfg, topk, topk_pct);
+    return m_.Shortlist(q, cfg, topk, topk_pct, max_db_index);
   }
 
   inlier::BeamResult BeamScore(const Arr<uint64_t> &q_tid,
@@ -523,6 +525,7 @@ PYBIND11_MODULE(_inlier_pybind, m) {
       .def("add", &PyMatcher::Add, py::arg("database_id"),
            py::arg("token_id"))
       .def("reset", &PyMatcher::Reset)
+      .def("reserve", &PyMatcher::Reserve, py::arg("n"))
       .def("finalize", &PyMatcher::Finalize)
       .def("__len__", &PyMatcher::Size)
       .def_property_readonly("finalized", &PyMatcher::Finalized)
@@ -531,7 +534,7 @@ PYBIND11_MODULE(_inlier_pybind, m) {
            "-> (token_id, hb, rb, sb, ab, max_active_hb)")
       .def("shortlist", &PyMatcher::Shortlist, py::arg("query_token_id"),
            py::arg("config"), py::arg("topk") = -1,
-           py::arg("topk_pct") = -1.0)
+           py::arg("topk_pct") = -1.0, py::arg("max_db_index") = -1)
       .def("beam_score", &PyMatcher::BeamScore, py::arg("query_token_id"),
            py::arg("candidate_ids"), py::arg("config"), py::arg("topk") = -1,
            py::arg("topk_pct") = -1.0)

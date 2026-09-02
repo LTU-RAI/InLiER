@@ -115,15 +115,16 @@ class InLiER_Matcher:
     ## ---- database management ----
 
     def add(self, database_id: int, tokens: InLiER_Tokens) -> None:
-        """Register one DB scan.  Must be called before finalize().
+        """Register one DB scan.  May be called after finalize().
 
         Unpacks (hb, rb, sb, ab) from ``token_id`` once and caches them
         alongside ``max_active_hb`` so that matching stages never
         redundantly decode the same scan.
-        """
-        if self._finalized:
-            raise RuntimeError("Matcher is finalized; call reset() to rebuild.")
 
+        Adding after ``finalize()`` marks the stacked histogram matrix
+        stale; the next ``finalize()`` appends the missing rows rather
+        than rebuilding, so a database can grow one scan at a time.
+        """
         db_id = int(database_id)
         if db_id in self._id_to_index:
             raise ValueError(f"database_id {db_id} already exists.")
@@ -141,6 +142,15 @@ class InLiER_Matcher:
         self._rb_arrays.append(rb)
         self._sb_arrays.append(sb)
         self._ab_arrays.append(ab)
+        ## _HM now has fewer rows than _db_ids; the next finalize appends them
+        self._finalized = False
+
+    def reserve(self, n: int) -> None:
+        """No-op; present so online protocols can call it on either backend.
+
+        The C++ core pre-allocates its dense histogram matrix here to keep
+        per-frame latency flat.  numpy reallocates on every append anyway.
+        """
 
     def reset(self) -> None:
         """Clear all stored scans and reset to pre-finalize state."""
@@ -192,33 +202,38 @@ class InLiER_Matcher:
         }
 
     def finalize(self, verbose: Optional[bool] = True) -> None:
-        """Materialize stacked hist_matrix from raw token_ids."""
-        if self._finalized:
+        """Materialize stacked hist_matrix from raw token_ids.
+
+        Append-only: scans already stacked keep their rows, only the ones
+        added since the last call are built.  Idempotent.
+        """
+        N    = len(self._db_ids)
+        have = 0 if self._HM is None else int(self._HM.shape[0])
+        if self._finalized and have == N:
             return
 
         t0 = _time.perf_counter()
-        N   = len(self._db_ids)
         Nh, Nr, Ns, Na = self._Nh, self._Nr, self._Ns, self._Na
-        V = Nh * Nr * Ns
+        V, Rw = Nh * Nr * Ns, Nr * Ns
 
         self.db_ids   = np.asarray(self._db_ids, dtype=np.int64)
         self._max_hbs = np.asarray(self._max_active_hbs, dtype=np.int32)
 
-        if N == 0:
-            self._HM = np.zeros((0, Nh, Nr * Ns), dtype=np.float32)
-            self._finalized = True
-            return
-
-        hm_list = [
-            self._tokens_to_hist(self._token_ids[i], Na, V, Nh, Nr * Ns)
-            for i in range(N)
-        ]
-        self._HM = np.stack(hm_list, axis=0)
+        if self._HM is None:
+            self._HM = np.zeros((0, Nh, Rw), dtype=np.float32)
+        if N > have:
+            new = np.stack(
+                [self._tokens_to_hist(self._token_ids[i], Na, V, Nh, Rw)
+                 for i in range(have, N)],
+                axis=0,
+            )
+            self._HM = np.concatenate((self._HM, new), axis=0)
         self._finalized = True
 
         if verbose:
             dt = _time.perf_counter() - t0
-            print(f"[InLiER_Matcher] finalize: {N} scans in {dt * 1000:.0f}ms")
+            print(f"[InLiER_Matcher] finalize: {N - have} of {N} scans "
+                  f"in {dt * 1000:.0f}ms")
 
     ## ---- shortlist — rotation-invariant MINT retrieval ----
 
@@ -228,21 +243,30 @@ class InLiER_Matcher:
         topk: Optional[int] = None,
         topk_pct: Optional[float] = None,
         verbose: Optional[bool] = True,
+        max_db_index: Optional[int] = None,
     ) -> ShortlistOutput:
-        """Query the full database; return a shortlist sorted by MINT score.
+        """Query the database; return a shortlist sorted by MINT score.
 
         Parameters
         ----------
         query_tokens : InLiER_Tokens for the query scan.
         topk         : Override config topk.
         topk_pct     : Override config topk_pct.
+        max_db_index : Search only the first ``max_db_index`` scans in
+                       insertion order (exclusive).  Causal exclusion for
+                       the online protocols: scoring, top-k resolution and
+                       the returned ids all see only those scans, so a
+                       bounded call equals an unbounded call on a database
+                       built from that prefix.
         """
         t0 = _time.perf_counter()
         self.finalize()
         assert self.db_ids is not None and self._HM is not None
 
         N = int(self.db_ids.shape[0])
-        if N == 0:
+        if max_db_index is not None:
+            N = min(int(max_db_index), N)
+        if N <= 0:
             return ShortlistOutput(ids=[], scores=[])
 
         k = self._resolve_topk(
@@ -259,7 +283,7 @@ class InLiER_Matcher:
             query_tokens.token_id, Na, V, Nh, Nr * Ns,
         )
 
-        scores = self._score_mint(q_hm, q["max_active_hb"])
+        scores = self._score_mint(q_hm, q["max_active_hb"], N)
         ids, sc = self._topk_sorted(scores, k)
         out = ShortlistOutput(
             ids=[int(x) for x in ids],
@@ -853,6 +877,7 @@ class InLiER_Matcher:
         self,
         q_hm: np.ndarray,
         q_max_hb: int,
+        n_db: int,
     ) -> np.ndarray:
         """Ceiling-prune, then score using the configured mode and function.
 
@@ -875,6 +900,7 @@ class InLiER_Matcher:
         ----------
         q_hm      : (Nh, Rw) query histogram (Rw = Nr·Ns).
         q_max_hb  : highest occupied height bin of the query.
+        n_db      : score only the first ``n_db`` DB scans (view, no copy).
 
         Returns
         -------
@@ -885,7 +911,9 @@ class InLiER_Matcher:
         eps        = float(cfg.eps)
         min_shared = int(cfg.min_shared_rows)
 
-        N, Nh, Rw = self._HM.shape     # (N_db, N_h, N_r·N_s)
+        HM, max_hbs = self._HM[:n_db], self._max_hbs[:n_db]
+
+        N, Nh, Rw = HM.shape           # (N_db, N_h, N_r·N_s)
 
         if q_max_hb < 0:
             return np.zeros(N, dtype=np.float32)
@@ -893,7 +921,7 @@ class InLiER_Matcher:
         ## ----------------------------------------------------------
         ## Step 1: Pairwise height-ceiling pruning
         ## ----------------------------------------------------------
-        ceilings    = np.minimum(q_max_hb, self._max_hbs)       # (N,)
+        ceilings    = np.minimum(q_max_hb, max_hbs)             # (N,)
         hb_idx      = np.arange(Nh, dtype=np.int32)
         height_mask = (hb_idx[None, :] <= ceilings[:, None])    # (N, Nh)
 
@@ -909,11 +937,11 @@ class InLiER_Matcher:
         mode = cfg.mint_mode.lower()
         if mode == "compact":
             # Collapse over height → (N, Rw)
-            db_vec = (self._HM * row_mask).sum(axis=1)            # (N, Rw)
+            db_vec = (HM * row_mask).sum(axis=1)                 # (N, Rw)
             q_vec  = (q_hm[None, :, :] * row_mask).sum(axis=1)   # (N, Rw)
         elif mode == "full":
             # Flatten ceiling-pruned (N, Nh, Rw) → (N, Nh*Rw)
-            db_vec = (self._HM * row_mask).reshape(N, -1)         # (N, Nh*Rw)
+            db_vec = (HM * row_mask).reshape(N, -1)              # (N, Nh*Rw)
             q_vec  = (q_hm[None, :, :] * row_mask).reshape(N, -1)  # (N, Nh*Rw)
         else:
             raise ValueError(

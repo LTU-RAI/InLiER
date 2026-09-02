@@ -186,10 +186,6 @@ Matcher::Matcher(InLiERConfig config)
 
 void Matcher::Add(int64_t database_id,
                   const std::vector<uint64_t> &token_id) {
-  if (finalized_) {
-    throw std::runtime_error(
-        "Matcher is finalized; call reset() to rebuild.");
-  }
   if (id_to_index_.count(database_id)) {
     throw std::invalid_argument("database_id " +
                                 std::to_string(database_id) +
@@ -211,6 +207,16 @@ void Matcher::Add(int64_t database_id,
   }
   max_hbs_.push_back(max_hb);
   offsets_.push_back(token_ids_.size());
+  // hm_ now has fewer rows than db_ids_; the next Finalize appends them.
+  finalized_ = false;
+}
+
+void Matcher::Reserve(size_t n) {
+  const size_t V = static_cast<size_t>(Nh_) * Nr_ * Ns_;
+  hm_.reserve(n * V);
+  db_ids_.reserve(n);
+  max_hbs_.reserve(n);
+  offsets_.reserve(n + 1);
 }
 
 void Matcher::Reset() {
@@ -228,13 +234,16 @@ void Matcher::Reset() {
 }
 
 void Matcher::Finalize() {
-  if (finalized_) {
-    return;
-  }
   const size_t N = db_ids_.size();
   const size_t V = static_cast<size_t>(Nh_) * Nr_ * Ns_;
-  hm_.assign(N * V, 0.0f);
-  for (size_t i = 0; i < N; ++i) {
+  // Rows already stacked; Reset() is the only thing that shrinks hm_.
+  const size_t have = V > 0 ? hm_.size() / V : N;
+  if (have == N) {
+    finalized_ = true;
+    return;
+  }
+  hm_.resize(N * V, 0.0f);
+  for (size_t i = have; i < N; ++i) {
     float *row = hm_.data() + i * V;
     for (size_t j = offsets_[i]; j < offsets_[i + 1]; ++j) {
       // stage1_id strips azimuth
@@ -268,12 +277,17 @@ ScanData Matcher::GetScanData(int64_t database_id) const {
 
 ShortlistResult Matcher::Shortlist(
     const std::vector<uint64_t> &query_token_id, const ShortlistConfig &cfg,
-    int topk_override, double topk_pct_override) {
+    int topk_override, double topk_pct_override, int64_t max_db_index) {
   Finalize();  // lazy, as in Python
 
-  const auto N = static_cast<int64_t>(db_ids_.size());
+  const auto N_db = static_cast<int64_t>(db_ids_.size());
+  // Scoring, top-k resolution and the returned ids all see only the first
+  // N scans, so a bounded call is exactly an unbounded call on a DB of
+  // that size.
+  const int64_t N =
+      max_db_index < 0 ? N_db : std::min(max_db_index, N_db);
   ShortlistResult out;
-  if (N == 0) {
+  if (N <= 0) {
     return out;
   }
   const int k = ResolveTopK(topk_override, topk_pct_override, cfg.topk,

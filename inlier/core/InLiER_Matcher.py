@@ -12,7 +12,8 @@ the compiled extension is unavailable or ``INLIER_FORCE_PYTHON=1``.
 
 Public API (unchanged)
 ----------------------
-add(database_id, tokens); finalize(); reset(); get_scan_data(id)
+add(database_id, tokens); finalize(); reset(); reserve(n)
+get_scan_data(id)
 shortlist(query_tokens, …)     → ShortlistOutput
 beam_score(query_tokens, …)    → BEAMScoreOutput
 rerank(query_tokens, …)        → RerankOutput
@@ -88,15 +89,21 @@ else:
             return len(self._cpp)
 
         def add(self, database_id: int, tokens: InLiER_Tokens) -> None:
-            ## the C++ side raises the same finalized/duplicate errors
+            ## the C++ side raises the same duplicate-id error
             self._cpp.add(int(database_id),
                           np.ascontiguousarray(tokens.token_id))
+            ## C++ hm_ is now short a row; the next finalize appends it
+            self._finalized = False
+
+        def reserve(self, n: int) -> None:
+            """Pre-allocate the dense histogram matrix for ``n`` scans."""
+            self._cpp.reserve(int(n))
 
         def finalize(self, verbose: Optional[bool] = True) -> None:
             if self._finalized:
                 return
             t0 = _time.perf_counter()
-            self._cpp.finalize()
+            self._cpp.finalize()   ## append-only on the C++ side
             self.db_ids = self._cpp.db_ids()
             self._finalized = True
             if verbose:
@@ -124,11 +131,14 @@ else:
             topk: Optional[int] = None,
             topk_pct: Optional[float] = None,
             verbose: Optional[bool] = True,
+            max_db_index: Optional[int] = None,
         ) -> ShortlistOutput:
             t0 = _time.perf_counter()
             self.finalize(verbose=verbose)
             N = len(self._cpp)
-            if N == 0:
+            if max_db_index is not None:
+                N = min(int(max_db_index), N)
+            if N <= 0:
                 return ShortlistOutput(ids=[], scores=[])
 
             res = self._cpp.shortlist(
@@ -137,6 +147,7 @@ else:
                     _ip.ShortlistConfig, self._shortlist_cfg),
                 -1 if topk is None else int(topk),
                 -1.0 if topk_pct is None else float(topk_pct),
+                -1 if max_db_index is None else int(max_db_index),
             )
             out = ShortlistOutput(ids=list(res.ids), scores=list(res.scores))
             if verbose:

@@ -42,6 +42,32 @@ if result.success:
     print(result.T_sensor)   # p_db = T_sensor @ p_query
 ```
 
+## A growing database
+
+`add()` may be called after `finalize()`. The next `finalize()` appends only
+the scans added since the last one, so a database can grow one scan at a time
+without rebuilding — which is what streaming loop-closure detection needs:
+
+```python
+matcher.reserve(len(stream))            # optional: keeps per-frame cost flat
+
+for t, scan in enumerate(stream):
+    keypoints, tokens = encoder.encode(scan, verbose=False)
+    if t > exclusion_window:
+        # search only frames older than the window, never the recent ones
+        s1 = matcher.shortlist(tokens, topk=100,
+                               max_db_index=t - exclusion_window)
+        ...
+    matcher.add(t, tokens)
+```
+
+`max_db_index` is an **exclusive bound in insertion order**, not a database ID,
+and it is applied inside the scoring loop. A bounded search returns exactly
+what an unbounded search over a database built from that prefix would return —
+including how `topk_pct` resolves, which is relative to the bounded count.
+Filtering the results afterwards instead would silently cost recall whenever
+the excluded frames crowd out the top-k.
+
 To load a configuration file instead of the dataclass defaults:
 
 ```python
