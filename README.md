@@ -456,13 +456,13 @@ Sparse single scans (solid-state, or low-resolution spinning units) generally ne
 
 ### Overlap Ground Truth
 
-[`inlier gt build`](inlier/eval/overlap_build.py) also supports custom data — pass `--dataset_type custom --db_path ... --q_path ...` (same `.pcd` + `poses_kitti.txt` layout, plus the DB→Q `--transform`) to compute the pairwise overlap matrix, just as in [Building Overlap Ground Truth](#building-overlap-ground-truth) for HeLiPR.
+[`inlier gt build`](inlier/eval/overlap_build.py) also supports generic data — pass `--dataset_type generic --db_path ... --q_path ...` (same `.pcd` + `poses_kitti.txt` layout, plus the DB→Q `--transform`) to compute the pairwise overlap matrix, just as in [Building Overlap Ground Truth](#building-overlap-ground-truth) for HeLiPR.
 
 With pre-accumulated scans, the defaults (`--n_db 1 --n_q 1`) use each `.pcd` as-is:
 
 ```bash
 inlier gt build \
-    --dataset_type custom \
+    --dataset_type generic \
     --db_path /path/to/database \
     --q_path  /path/to/query \
     --transform /path/to/transform.txt \
@@ -474,7 +474,7 @@ With single scans, accumulate them into submaps — e.g. 10 scans per submap, st
 
 ```bash
 inlier gt build \
-    --dataset_type custom \
+    --dataset_type generic \
     --db_path /path/to/database \
     --q_path  /path/to/query \
     --transform /path/to/transform.txt \
@@ -496,7 +496,7 @@ inlier eval cross-session --dataset_type generic \
     --overlap_file /path/to/overlap.txt \
     --overlap_threshold 0.2 --max_pose_dist 25.0 \
     --n_db 10 --n_q 10 --stride_db 1 --stride_q 1 \
-    --output_dir results/custom_dataset
+    --output_dir results/generic_dataset
 ```
 
 `--transform` defaults to `<db_path>/transform.txt` if present, and `--no_transform` disables it when both sequences already share a world frame. Outputs match the HeLiPR driver (`results_*.json`, `candidates_*.csv`, descriptor caches, trajectory plot) under `--output_dir`.

@@ -26,9 +26,9 @@ Usage — HeLiPR:
     --output_dir overlap_matrices --pairs O-Aeva \
     --voxel_size 0.5 --distance_threshold 100 --block_size 200
 
-Usage — custom (.pcd + poses_kitti.txt):
+Usage — generic (.pcd + poses_kitti.txt):
   python3 evaluation/scripts/build_overlap_data.py \
-    --dataset_type custom \
+    --dataset_type generic \
     --db_path ~/Documents/datasets/campus_ouster \
     --q_path  ~/Documents/datasets/campus_robinw \
     --transform ~/Documents/datasets/campus_ouster/T_robinw_ouster.txt \
@@ -117,7 +117,7 @@ def _load_sequence_metadata(handler, sequence, sensor, scan_type):
 
 
 # ---------------------------------------------------------------------------
-#  Custom dataset loading (pcd + poses_kitti.txt)
+#  Generic dataset loading (pcd + poses_kitti.txt)
 # ---------------------------------------------------------------------------
 
 def _load_kitti_poses(poses_file: Path) -> list:
@@ -133,8 +133,8 @@ def _load_kitti_poses(poses_file: Path) -> list:
     return poses
 
 
-def _load_custom_sequence_metadata(seq_path: Path, inter_transform: np.ndarray = None):
-    """Load poses and scan list for a custom dataset directory.
+def _load_generic_sequence_metadata(seq_path: Path, inter_transform: np.ndarray = None):
+    """Load poses and scan list for a generic dataset directory.
 
     seq_path       – directory with scans/ subdirectory and poses_kitti.txt
     inter_transform – 4x4 matrix that maps this sequence's world frame into the
@@ -449,7 +449,7 @@ def build_overlap_matrix(
     )
 
 
-def build_overlap_matrix_custom(
+def build_overlap_matrix_generic(
     db_path,
     q_path,
     inter_transform,
@@ -464,7 +464,7 @@ def build_overlap_matrix_custom(
     stride_db=None,
     stride_q=None,
 ):
-    """Build an NxM HeLiOS overlap matrix for a custom pcd+poses_kitti.txt dataset.
+    """Build an NxM HeLiOS overlap matrix for a generic pcd+poses_kitti.txt dataset.
 
     inter_transform – 4x4 matrix T that maps the DB world frame into the Q world
                       frame (e.g. T_robinw_ouster when DB=ouster, Q=robinw).
@@ -494,9 +494,9 @@ def build_overlap_matrix_custom(
     print(f"{'=' * 64}")
 
     print(f"\n  [Step 1/{n_steps}] Loading poses & listing scans ...")
-    db_pos_raw, db_poses_raw, db_files_raw = _load_custom_sequence_metadata(
+    db_pos_raw, db_poses_raw, db_files_raw = _load_generic_sequence_metadata(
         db_path, inter_transform)
-    q_pos_raw, q_poses_raw, q_files_raw = _load_custom_sequence_metadata(
+    q_pos_raw, q_poses_raw, q_files_raw = _load_generic_sequence_metadata(
         q_path, None)
 
     db_pos, db_poses, db_files = _group_into_submaps(
@@ -554,8 +554,9 @@ def main(argv=None):
     )
     parser.add_argument(
         "--dataset_type", type=str, default="helipr",
-        choices=["helipr", "custom"],
-        help="Dataset type: 'helipr' (default) or 'custom' (.pcd + poses_kitti.txt)."
+        choices=["helipr", "generic", "custom"], metavar="{helipr,generic}",
+        help="Dataset type: 'helipr' (default) or 'generic' (.pcd + poses_kitti.txt).  "
+             "'custom' is accepted as a deprecated alias for 'generic'."
     )
 
     # ---- HeLiPR-only args ----
@@ -579,17 +580,17 @@ def main(argv=None):
              "Default: all."
     )
 
-    # ---- custom-only args ----
-    custom = parser.add_argument_group("Custom options (dataset_type=custom)")
-    custom.add_argument(
+    # ---- generic-only args ----
+    generic = parser.add_argument_group("Generic options (dataset_type=generic)")
+    generic.add_argument(
         "--db_path", type=str,
         help="Path to the DB dataset directory (contains scans/ and poses_kitti.txt)."
     )
-    custom.add_argument(
+    generic.add_argument(
         "--q_path", type=str,
         help="Path to the Q dataset directory (contains scans/ and poses_kitti.txt)."
     )
-    custom.add_argument(
+    generic.add_argument(
         "--transform", type=str, default=None,
         help="Path to a 4x4 transform.txt that maps DB world frame → Q world frame. "
              "Defaults to <db_path>/transform.txt if it exists."
@@ -647,6 +648,8 @@ def main(argv=None):
              "Lower = less peak RAM.  (default: 50)"
     )
     args = parser.parse_args(argv)
+    if args.dataset_type == "custom":     # pre-0.3 spelling of "generic"
+        args.dataset_type = "generic"
 
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -735,11 +738,11 @@ def main(argv=None):
                   f"{nonzero} non-zero entries, "
                   f"max overlap = {overlap.max():.4f})\n")
 
-    # ---- custom mode -------------------------------------------------------
+    # ---- generic mode -------------------------------------------------------
     else:
         if not args.db_path or not args.q_path:
             parser.error(
-                "--db_path and --q_path are required for dataset_type=custom"
+                "--db_path and --q_path are required for dataset_type=generic"
             )
 
         db_path = Path(args.db_path)
@@ -765,7 +768,7 @@ def main(argv=None):
                     f"got shape {inter_transform.shape}"
                 )
 
-        overlap = build_overlap_matrix_custom(
+        overlap = build_overlap_matrix_generic(
             db_path,
             q_path,
             inter_transform,

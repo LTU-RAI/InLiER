@@ -25,9 +25,9 @@ Usage — HeLiPR:
         --pair O-Aeva \
         --overlap_dir overlap_matrices
 
-Usage — custom (.pcd + poses_kitti.txt):
+Usage — generic (.pcd + poses_kitti.txt):
     python3 validate_overlap.py \
-        --dataset_type custom \
+        --dataset_type generic \
         --db_path ~/Documents/datasets/campus_ouster \
         --q_path  ~/Documents/datasets/campus_robinw \
         --transform ~/Documents/datasets/campus_ouster/T_robinw_ouster.txt \
@@ -116,7 +116,7 @@ def load_scan_global_voxelized_helipr(handler, bin_files, sensor, poses,
 
 
 # ---------------------------------------------------------------------------
-#  Custom dataset loading (.pcd + poses_kitti.txt)
+#  Generic dataset loading (.pcd + poses_kitti.txt)
 # ---------------------------------------------------------------------------
 
 def _load_kitti_poses(poses_file: Path) -> list:
@@ -156,8 +156,8 @@ def group_into_submaps(positions, poses, files, n, stride=None):
     return np.asarray(kf_positions), submap_poses, submap_files
 
 
-def load_custom_sequence(seq_path: Path, inter_transform=None):
-    """Load poses and scan file list for a custom dataset.
+def load_generic_sequence(seq_path: Path, inter_transform=None):
+    """Load poses and scan file list for a generic dataset.
 
     inter_transform – 4x4 that maps this sequence's frame into the reference
                       frame; None means this sequence is the reference.
@@ -197,7 +197,7 @@ def _gicp_refine(db_pts, q_pts, voxel_size, max_dist):
 
 
 def load_scan_global_voxelized_pcd(pcd_files, poses, voxel_size, max_range):
-    """Custom: accumulate N .pcd → range filter → global frame → voxelize."""
+    """Generic: accumulate N .pcd → range filter → global frame → voxelize."""
     all_pts = []
     for pcd_file, pose in zip(pcd_files, poses):
         cloud = o3d.io.read_point_cloud(str(pcd_file))
@@ -466,8 +466,9 @@ def main(argv=None):
     )
     parser.add_argument(
         "--dataset_type", type=str, default="helipr",
-        choices=["helipr", "custom"],
-        help="Dataset type: 'helipr' (default) or 'custom' (.pcd + poses_kitti.txt)."
+        choices=["helipr", "generic", "custom"], metavar="{helipr,generic}",
+        help="Dataset type: 'helipr' (default) or 'generic' (.pcd + poses_kitti.txt).  "
+             "'custom' is accepted as a deprecated alias for 'generic'."
     )
 
     helipr = parser.add_argument_group("HeLiPR options (dataset_type=helipr)")
@@ -480,12 +481,12 @@ def main(argv=None):
     helipr.add_argument("--pair", type=str,
                         help="Sensor pair DB-Q, e.g. 'O-O', 'O-Aeva'.")
 
-    custom = parser.add_argument_group("Custom options (dataset_type=custom)")
-    custom.add_argument("--db_path", type=str,
+    generic = parser.add_argument_group("Generic options (dataset_type=generic)")
+    generic.add_argument("--db_path", type=str,
                         help="DB dataset directory (scans/ + poses_kitti.txt).")
-    custom.add_argument("--q_path", type=str,
+    generic.add_argument("--q_path", type=str,
                         help="Q dataset directory (scans/ + poses_kitti.txt).")
-    custom.add_argument(
+    generic.add_argument(
         "--transform", type=str, default=None,
         help="4x4 transform.txt mapping DB frame → Q frame. "
              "Defaults to <db_path>/transform.txt if it exists."
@@ -519,6 +520,8 @@ def main(argv=None):
                         help="Seed for the random example-pair selection. "
                              "Omit for a different pair each run.")
     args = parser.parse_args(argv)
+    if args.dataset_type == "custom":     # pre-0.3 spelling of "generic"
+        args.dataset_type = "generic"
 
     rng = np.random.default_rng(args.seed)
 
@@ -588,10 +591,10 @@ def main(argv=None):
         db_label = f"{args.db_sequence}/{db_sensor}"
         q_label = f"{args.q_sequence}/{q_sensor}"
 
-    # ---- custom mode -------------------------------------------------------
+    # ---- generic mode -------------------------------------------------------
     else:
         if not args.db_path or not args.q_path:
-            parser.error("--db_path and --q_path are required for dataset_type=custom")
+            parser.error("--db_path and --q_path are required for dataset_type=generic")
 
         db_path = Path(args.db_path)
         q_path = Path(args.q_path)
@@ -623,10 +626,10 @@ def main(argv=None):
         print(f"Loaded overlap matrix: {overlap.shape[0]} × {overlap.shape[1]}")
 
         print("Loading DB poses ...")
-        db_pos_raw, db_poses_raw, db_files_raw = load_custom_sequence(
+        db_pos_raw, db_poses_raw, db_files_raw = load_generic_sequence(
             db_path, inter_transform)
         print("Loading Q poses ...")
-        q_pos_raw, q_poses_raw, q_files_raw = load_custom_sequence(q_path, None)
+        q_pos_raw, q_poses_raw, q_files_raw = load_generic_sequence(q_path, None)
 
         _, db_poses, db_files = group_into_submaps(
             db_pos_raw, db_poses_raw, db_files_raw, args.n_db, stride=eff_sdb)
