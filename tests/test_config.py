@@ -44,7 +44,7 @@ def test_values_derived_from_voxel_size():
 
 
 def test_explicit_cell_size_wins_over_the_derivation():
-    """README documents cell_size as tunable; run_evaluation ignored it."""
+    """docs/configuration.md documents cell_size as tunable; run_evaluation ignored it."""
     r = resolve(deep_merge(load(), {"voxel_size": 0.25, "encoder": {"cell_size": 3.0}}))
     assert r.inlier.cell_size == 3.0
 

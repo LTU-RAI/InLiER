@@ -246,7 +246,7 @@ class GenericSource:
 
     ``n_scans``/``stride`` control submap accumulation and **must** match what
     the overlap ground truth was built with -- the matrix is indexed by submap,
-    so a mismatch silently misaligns GT against retrieval.  README.md warns
+    so a mismatch silently misaligns GT against retrieval.  docs/custom-data.md warns
     about this in prose; :mod:`inlier.eval.overlap` now records the values in a
     sidecar and checks them instead.
     """

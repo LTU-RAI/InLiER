@@ -2,7 +2,7 @@
 
 Wraps the two scripts that used to live under ``evaluation/scripts/``.  Their
 argument surface is preserved exactly (both spellings of every flag), because
-the README documents those command lines; the one addition is that ``build``
+docs/helipr-benchmark.md documents those command lines; the one addition is that ``build``
 now writes a provenance sidecar so the evaluation can verify a matrix was built
 the way it is about to be read.
 """

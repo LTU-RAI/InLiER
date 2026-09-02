@@ -2,7 +2,7 @@
 
 The matrix is indexed by submap, so an evaluation that accumulates scans
 differently reads row i as a different piece of trajectory and every metric is
-wrong with no error raised.  README.md warns about this in prose; these tests
+wrong with no error raised.  docs/custom-data.md warns about this in prose; these tests
 cover the check that replaces the warning.
 """
 

@@ -151,7 +151,7 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     parser = build_parser()
     # Some subcommands (inlier gt build/validate) wrap a script whose full flag
-    # surface is documented in the README; they opt in to passthrough with
+    # surface is documented in docs/cli.md; they opt in to passthrough with
     # _forward and receive the leftovers verbatim.  Every other command still
     # rejects unknown flags, so a typo is an error rather than a silent no-op.
     args, rest = parser.parse_known_args(argv)

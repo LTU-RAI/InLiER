@@ -5,8 +5,8 @@ to build it (``n_db``, ``n_q``, ``stride_db``, ``stride_q``) must be the same
 ones the evaluation later uses.  If they differ, row *i* of the matrix
 describes a different stretch of trajectory than query *i* of the run, and the
 ground truth is silently misaligned -- every metric is wrong and nothing
-errors.  README.md mitigates this with a bold warning that the parameters
-"**must match what you later pass to** evaluate_inlier_generic.py".
+errors.  docs/custom-data.md mitigates this with a bold warning that the
+parameters "**must match what you later pass to** inlier eval cross-session".
 
 A warning in prose is not a check.  :func:`save` writes a machine-readable
 sidecar next to the matrix recording exactly how it was built, and

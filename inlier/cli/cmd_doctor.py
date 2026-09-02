@@ -289,7 +289,7 @@ def _check_overlap_sidecars(overlap_dir: Path) -> int:
     _row(OK, "matrices", f"{len(matrices)} found")
     if missing:
         # Without the sidecar there is nothing to check the submap parameters
-        # against, which is the mismatch README.md warns about in prose.
+        # against, which is the mismatch docs/custom-data.md warns about in prose.
         _row(WARN, "sidecars", f"{len(missing)} matrix/matrices predate the "
                                f"provenance sidecar; parameters cannot be verified")
         for m in missing[:3]:

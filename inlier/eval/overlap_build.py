@@ -528,7 +528,7 @@ def _write_sidecar(filepath, overlap, *, n_db, n_q, stride_db, stride_q,
 
     The matrix is indexed by submap, so an evaluation that accumulates scans
     differently reads row i as a different stretch of trajectory -- silently.
-    README.md warns about this in prose; this makes it checkable.
+    docs/custom-data.md warns about this in prose; this makes it checkable.
     """
     from inlier.eval.overlap import OverlapProvenance, sidecar_path
     import json as _json

@@ -149,7 +149,7 @@ def resolve(cfg: Dict[str, Any], mode: Mode = "eval") -> ResolvedConfig:
     # and were therefore invisible to anyone reading the YAML.
     #
     # NOTE: run_evaluation() hardcoded `cell_size = 2 * voxel_size` and ignored
-    # the YAML key entirely -- even though README.md documents `cell_size` as a
+    # the YAML key entirely -- even though docs/configuration.md documents `cell_size` as a
     # tunable ("BEV cell size (m) ... keep it ~ 2 x voxel_size").  Here an
     # explicit config value wins and the derivation is the fallback, so the
     # documented knob actually does something.  With the shipped default.yaml
