@@ -51,6 +51,9 @@ class Generic_Handler:
     unless a file is inferred wrongly -- see :meth:`_bin_cols`.
     """
 
+    #: Prefix for this handler's progress lines; subclasses say their own name.
+    _LOG_NAME = "Generic_Handler"
+
     def __init__(self, verbose: bool = True, scans_dir=None, pose_file=None,
                  bin_cols: Optional[int] = None):
         self.verbose = verbose
@@ -142,7 +145,7 @@ class Generic_Handler:
                     return []
         if len(stamps) != n_poses:
             if self.verbose:
-                print(f"  [Generic_Handler] {tum.name} has {len(stamps)} lines "
+                print(f"  [{self._LOG_NAME}] {tum.name} has {len(stamps)} lines "
                       f"for {n_poses} poses; ignoring its timestamps")
             return []
         return stamps
@@ -191,7 +194,7 @@ class Generic_Handler:
         if self.verbose:
             where = "" if not stamps else (
                 " with timestamps" if fmt == "tum" else " + poses_tum.txt timestamps")
-            print(f"  [Generic_Handler] loaded {len(poses)} poses ({fmt}) "
+            print(f"  [{self._LOG_NAME}] loaded {len(poses)} poses ({fmt}) "
                   f"from {pose_path.name}{where}")
         return poses, stamps
 
@@ -254,7 +257,7 @@ class Generic_Handler:
         fits = [c for c in (3, 5, 6) if n_floats % c == 0]
         if len(fits) == 1:
             if self.verbose:
-                print(f"  [Generic_Handler] {path.name}: {n_floats} floats is "
+                print(f"  [{self._LOG_NAME}] {path.name}: {n_floats} floats is "
                       f"not x,y,z,intensity; reading {fits[0]} per point")
             return fits[0]
         raise ValueError(
@@ -408,7 +411,7 @@ class Generic_Handler:
             scope = ("" if select is None
                      else f" (selected out of {len(submap_windows(len(poses), n_scans, stride))})")
             print(
-                f"  [Generic_Handler] built {len(submap_points)} submap(s)"
+                f"  [{self._LOG_NAME}] built {len(submap_points)} submap(s)"
                 f"{scope} (n_scans={n_scans}, stride={stride}) from "
                 f"{len(poses)} scans in {self.scan_dir(dataset_dir)}"
             )

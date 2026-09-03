@@ -17,6 +17,7 @@ inlier --help
 | `inlier gt build` \| `validate` | build or sanity-check the overlap ground truth |
 | `inlier eval cross-session` | offline: full database vs full query sequence |
 | `inlier eval online-lcd` | online: one session, a growing database, causal matching |
+| | (`helipr`, `generic` or `kitti` data — see [Your Own Data](custom-data.md)) |
 | `inlier play` | replay a finished run as an animation |
 | `inlier bench cpp-vs-py` | time the C++ core against the numpy reference |
 
@@ -339,6 +340,11 @@ With `--dataset-type generic`, `--scans DIR` and `--poses FILE` name the two
 paths directly when the data is not laid out as `<dataset>/scans` beside
 `poses_kitti.txt`, and `.bin` scans are read alongside `.pcd`. See
 [Test Your Own Data](custom-data.md#if-your-data-isnt-laid-out-that-way).
+
+`--dataset-type kitti` reads the KITTI odometry benchmark, with `--sequence 00`.
+Use it rather than `generic` for KITTI: its ground-truth poses are in the camera
+frame and need the calibration applied, which the generic loader cannot know
+about. See [KITTI Odometry](custom-data.md#kitti-odometry).
 
 #### `--search-radius`
 

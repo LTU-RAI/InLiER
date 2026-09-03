@@ -41,8 +41,10 @@ def register(subparsers, parent) -> None:
     p.add_argument("--dataset", type=str, default=None,
                    help="dataset root to check, against --dataset-type's layout")
     p.add_argument("--dataset-type", dest="dataset_type",
-                   choices=("helipr", "generic"), default="helipr",
+                   choices=("helipr", "generic", "kitti"), default="helipr",
                    help="layout to check --dataset against (default: helipr)")
+    p.add_argument("--sequence", type=str, default=None, metavar="XX",
+                   help="KITTI sequence id to check, e.g. 00")
     add_generic_layout_flags(p)
     p.add_argument("--overlap-dir", dest="overlap_dir",
                    type=str, default="overlap_matrices",
@@ -137,7 +139,8 @@ def run(args: argparse.Namespace) -> int:
     if args.dataset or scans_dir is not None:
         # --scans alone is enough to check: the root is only the heading.
         root = Path(args.dataset) if args.dataset else Path(scans_dir).parent
-        failures += _check_dataset(root, args.dataset_type, scans_dir, pose_file)
+        failures += _check_dataset(root, args.dataset_type, scans_dir,
+                                   pose_file, args.sequence)
 
     warnings += _check_overlap_sidecars(Path(args.overlap_dir))
 
@@ -154,11 +157,14 @@ def run(args: argparse.Namespace) -> int:
 LAYOUTS = {
     "helipr": "<root>/<sequence>/Undistorted/<sensor>/*.bin",
     "generic": "<root>/scans/*.{pcd,bin} + poses_kitti.txt or poses_tum.txt",
+    "kitti": ("<root>/sequences/XX/{velodyne/*.bin, calib.txt, times.txt}"
+              " + poses/XX.txt or sequences/XX/poses.txt"),
 }
 
 
 def _check_dataset(root: Path, dataset_type: str,
-                   scans_dir: Path = None, pose_file: Path = None) -> int:
+                   scans_dir: Path = None, pose_file: Path = None,
+                   sequence: str = None) -> int:
     print(f"\ndataset  {root}")
     explicit = scans_dir is not None or pose_file is not None
     _row(OK, "layout",
@@ -167,6 +173,8 @@ def _check_dataset(root: Path, dataset_type: str,
     if not root.exists() and not explicit:
         _row(FAIL, "root", "does not exist")
         return 1
+    if dataset_type == "kitti":
+        return _check_kitti(root, sequence)
     if dataset_type == "generic" or explicit:
         return _check_generic(root, scans_dir, pose_file)
     return _check_helipr(root)
@@ -176,13 +184,122 @@ def _looks_generic(root: Path) -> bool:
     return (root / "scans").is_dir()
 
 
+def _looks_kitti(root: Path) -> bool:
+    return (root / "sequences").is_dir() or (root / "velodyne").is_dir()
+
+
 def _looks_helipr(root: Path) -> bool:
     return any((seq / "Undistorted").is_dir() or (seq / "LiDAR").is_dir()
                for seq in root.iterdir() if seq.is_dir())
 
 
+def _check_kitti(root: Path, sequence: str = None) -> int:
+    """A KITTI odometry sequence, including whether the pose frame is sane.
+
+    The frame check is the point of this one.  KITTI ships its poses in the
+    camera frame, and a run against uncorrected poses fails in a way that
+    looks like bad retrieval rather than bad geometry -- so the spans are
+    reported here, where one command answers it.
+    """
+    import numpy as np
+
+    from inlier.eval.datasets.kitti import (SCAN_SUBDIR, KITTI_Handler,
+                                            normalise_sequence, read_calib_tr)
+
+    if not _looks_kitti(root):
+        _row(FAIL, "layout mismatch",
+             f"{root} has neither sequences/ nor {SCAN_SUBDIR}/ -- this does "
+             f"not look like a KITTI odometry tree")
+        return 1
+
+    if (root / SCAN_SUBDIR).is_dir():
+        sequence = normalise_sequence(sequence or root.name)
+    elif sequence is None:
+        available = sorted(p.name for p in (root / "sequences").iterdir()
+                           if p.is_dir()) if (root / "sequences").is_dir() else []
+        _row(FAIL, "sequence", "--dataset-type kitti needs --sequence"
+             + (f" (found: {', '.join(available)})" if available else ""))
+        return 1
+    else:
+        sequence = normalise_sequence(sequence)
+
+    failures = 0
+    handler = KITTI_Handler(root, sequence, verbose=False)
+    try:
+        seq_dir = handler.seq_dir
+    except FileNotFoundError as exc:
+        _row(FAIL, "sequence", str(exc).splitlines()[0])
+        return 1
+    _row(OK, f"sequence {sequence}", str(seq_dir))
+
+    scans = []
+    try:
+        scans = handler.list_scan_files(seq_dir)
+    except (FileNotFoundError, NotADirectoryError, RuntimeError) as exc:
+        _row(FAIL, f"{SCAN_SUBDIR}/", str(exc).splitlines()[0])
+        failures += 1
+    else:
+        _row(OK, f"{SCAN_SUBDIR}/", f"{len(scans):,} .bin files")
+
+    try:
+        calib = handler.calib_file
+        Tr = read_calib_tr(calib)
+    except (OSError, ValueError) as exc:
+        _row(FAIL, "calib", str(exc).splitlines()[0])
+        return failures + 1
+    _row(OK, "calib", f"{calib}, Tr found")
+
+    try:
+        poses, stamps = handler.load_poses(seq_dir)
+    except (OSError, ValueError) as exc:
+        _row(FAIL, "poses", str(exc).splitlines()[0])
+        return failures + 1
+    pose_path, _ = handler._pose_file(seq_dir)
+    _row(OK, "poses", f"{pose_path}, {len(poses):,} poses")
+
+    if stamps:
+        _row(OK, "times.txt", f"{len(stamps):,} timestamps "
+                              f"({stamps[-1] - stamps[0]:.1f} s) "
+                              f"-- --exclusion seconds= is available")
+    else:
+        _row(WARN, "times.txt", "missing or mismatched -- "
+                                "--exclusion seconds= will not work")
+
+    if scans and len(poses) != len(scans):
+        _row(FAIL, "poses vs scans",
+             f"{len(poses):,} poses but {len(scans):,} scans -- "
+             f"load_generic requires they match")
+        failures += 1
+
+    # The frame check: KITTI drives are near-planar, so after the correction
+    # the vertical span must be by far the smallest.  WARN, never FAIL -- a
+    # short sequence straight up a hill could legitimately be tall.
+    t = np.array([p[:3, 3] for p in poses]) if poses else np.zeros((0, 3))
+    if len(t) > 1:
+        spans = np.ptp(t, axis=0)
+        detail = "  ".join(f"{a}={v:.1f}m" for a, v in zip("xyz", spans))
+        if spans[2] <= 0.2 * max(spans[0], spans[1]):
+            _row(OK, "pose frame", f"velodyne (z is vertical): {detail}")
+        else:
+            _row(WARN, "pose frame",
+                 f"z is not clearly the vertical axis: {detail}. Expected a "
+                 f"near-planar drive after the camera->velodyne correction; "
+                 f"check that {calib.name} belongs to this sequence.")
+
+    if scans:
+        failures += _check_sample_scan(scans[0])
+    return failures
+
+
 def _check_helipr(root: Path) -> int:
     sequences = sorted(p for p in root.iterdir() if p.is_dir())
+    if _looks_kitti(root) and not _looks_helipr(root):
+        # Without this a KITTI tree passes the HeLiPR check: `sequences/` reads
+        # as one sequence that merely lacks Undistorted/, which is a warning.
+        _row(FAIL, "layout mismatch", "this looks like a KITTI odometry tree "
+                                      "(it has sequences/) -- pass "
+                                      "--dataset-type kitti --sequence XX")
+        return 1
     if not sequences or (_looks_generic(root) and not _looks_helipr(root)):
         # The most likely reason a HeLiPR check finds nothing is that this is
         # not a HeLiPR tree.  Say that, rather than "no sequences found".
@@ -231,6 +348,11 @@ def _check_generic(root: Path, scans_dir: Path = None,
     if not explicit and not _looks_generic(root) and _looks_helipr(root):
         _row(FAIL, "layout mismatch", "this looks like a HeLiPR tree -- "
                                       "pass --dataset-type helipr")
+        return 1
+    if not explicit and not _looks_generic(root) and _looks_kitti(root):
+        _row(FAIL, "layout mismatch", "this looks like a KITTI odometry tree "
+                                      "-- pass --dataset-type kitti "
+                                      "--sequence XX")
         return 1
 
     failures = 0

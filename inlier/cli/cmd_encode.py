@@ -51,8 +51,11 @@ def register(subparsers, parent) -> None:
     data.add_argument("--dataset", type=user_path, default=None, metavar="ROOT",
                       help="dataset root, instead of a scan path")
     data.add_argument("--dataset-type", dest="dataset_type",
-                      choices=("generic", "helipr"), default="generic",
+                      choices=("generic", "helipr", "kitti"), default="generic",
                       help="loader for --dataset (default: generic)")
+    data.add_argument("--sequence", type=str, default=None, metavar="XX",
+                      help="KITTI sequence id, e.g. 00; not needed when "
+                           "--dataset is itself a sequence directory")
     data.add_argument("--n-scans", dest="n_scans", type=int,
                       default=1, metavar="N",
                       help="scans per submap; must match the overlap ground "
@@ -151,6 +154,39 @@ def _submap_mode(args) -> bool:
     return args.dataset is not None or getattr(args, "scans_dir", None) is not None
 
 
+def _dataset_root(args) -> Path:
+    """The sequence's identity, whichever loader named it."""
+    if args.dataset_type == "kitti":
+        return _kitti_handler(args, quiet=True)[1]
+    return _generic_root(args)
+
+
+def _kitti_handler(args, quiet: bool):
+    """``(handler, sequence_dir)`` for a KITTI submap encode.
+
+    The sequence directory is what the rest of this module treats as the
+    dataset root, so the range-check message and the figure title read ``00``
+    rather than the name of whatever folder the whole benchmark lives in.
+    """
+    from inlier.eval.datasets.kitti import (SCAN_SUBDIR, KITTI_Handler,
+                                            normalise_sequence)
+
+    root = Path(args.dataset)
+    if not root.is_dir():
+        raise FileNotFoundError(f"--dataset {root} is not a directory")
+    if (root / SCAN_SUBDIR).is_dir():
+        sequence = normalise_sequence(args.sequence or root.name)
+    elif args.sequence:
+        sequence = normalise_sequence(args.sequence)
+    else:
+        raise ValueError(
+            "--dataset-type kitti needs --sequence (e.g. --sequence 00), "
+            f"unless --dataset points straight at a sequence directory -- one "
+            f"containing {SCAN_SUBDIR}/.")
+    handler = KITTI_Handler(root, sequence, verbose=not quiet)
+    return handler, handler.seq_dir
+
+
 def _generic_root(args) -> Path:
     """The sequence's identity: ``--dataset``, or the scans folder's parent.
 
@@ -193,10 +229,13 @@ def _load_submaps(args, quiet: bool):
     from inlier.eval.datasets.generic import Generic_Handler
     from inlier.eval.submaps import submap_count
 
-    root = _generic_root(args)
-    handler = Generic_Handler(verbose=not quiet,
-                              scans_dir=getattr(args, "scans_dir", None),
-                              pose_file=getattr(args, "pose_file", None))
+    if args.dataset_type == "kitti":
+        handler, root = _kitti_handler(args, quiet)
+    else:
+        root = _generic_root(args)
+        handler = Generic_Handler(verbose=not quiet,
+                                  scans_dir=getattr(args, "scans_dir", None),
+                                  pose_file=getattr(args, "pose_file", None))
     stride = args.n_scans if args.stride is None else args.stride
     total = submap_count(len(handler.list_scan_files(root)), args.n_scans, stride)
 
@@ -269,8 +308,14 @@ def _submap_items(args, quiet: bool):
                 "n_scans": args.n_scans,
                 "stride": stride,
                 "submap_index": index,
+                # Which loader built it.  Without this the cloud cannot be
+                # reloaded later -- `inlier match` would try KITTI's sequence
+                # directory as a generic one and find no scans/ beside it,
+                # and a KITTI cloud rebuilt with uncorrected poses would be
+                # wrong rather than merely missing.
+                "dataset_type": args.dataset_type,
                 "keyframe_pose": pose,
-                "dataset": str(_generic_root(args)),
+                "dataset": str(_dataset_root(args)),
             },
         ))
     return items, len(items) > 1
@@ -387,5 +432,5 @@ def _title(args, label: str, extra: dict) -> str:
     if "submap_index" not in extra:
         return str(Path(args.input) if Path(args.input).is_file()
                    else Path(args.input) / label)
-    return (f"{_generic_root(args).name}  {label}  "
+    return (f"{_dataset_root(args).name}  {label}  "
             f"(n_scans={extra['n_scans']}, stride={extra['stride']})")

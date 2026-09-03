@@ -80,6 +80,97 @@ The evaluation auto-detects `<db_path>/transform.txt` if it exists; pass `--tran
 
 Sparse single scans (solid-state, or low-resolution spinning units) generally need accumulation for the height-slice keypoints to be stable.
 
+## KITTI Odometry
+
+`--dataset-type kitti` reads the [KITTI odometry benchmark](https://www.cvlibs.net/datasets/kitti/eval_odometry.php)
+directly. Use it — **do not** point `--dataset-type generic` at a KITTI tree.
+
+```bash
+inlier doctor      --dataset-type kitti --dataset /data/kitti --sequence 00
+inlier encode      --dataset-type kitti --dataset /data/kitti --sequence 00 --n-scans 10 --viz
+inlier eval online-lcd --dataset-type kitti --dataset /data/kitti --sequence 00 \
+    --n-scans 10 --stride 5 --exclusion seconds=30 --max-pose-dist 10.0 -o results/kitti
+```
+
+`--sequence` may be dropped when `--dataset` points straight at a sequence
+directory (one containing `velodyne/`). Cross-session, `gt build` and
+`inlier match` do **not** accept `kitti`.
+
+### Why it needs its own loader
+
+KITTI's ground-truth poses are in the **left rectified camera** frame, while the
+scans in `velodyne/*.bin` are in the velodyne frame. Read verbatim the two
+disagree, and nothing downstream can tell: the positions are still finite,
+still monotonic, still plot. On sequence 00 the raw pose translations span
+x=565 m, **y=15 m**, z=498 m — the vertical axis is `y`.
+
+That breaks two things. Every distance InLiER computes is **XY-only**
+(`--max-pose-dist`, `--search-radius`, and the arc length behind
+`--exclusion metres=`), so ground truth gets measured across a 565 × 15 m
+sliver of facade instead of the 498 × 565 m ground plane. And with
+`--n-scans > 1` the submaps are corrupted outright, because accumulation
+applies a camera-frame relative transform to velodyne points.
+
+`calib.txt` carries the fix. Its `Tr` maps velodyne into the camera frame, so
+`T_i = inv(Tr) · P_i · Tr` is the pose in a velodyne-frame world. After it, z
+is vertical (9.4 m of climb on sequence 00) and xy is the ground plane. The
+correction comes from the dataset's own calibration, so there is nothing to
+configure and nothing to configure wrongly — which is also why there is no
+flag to turn it off.
+
+`inlier doctor` reports the spans, so this is one command to check:
+
+```text
+  [ ok ] pose frame             velodyne (z is vertical): x=498.5m  y=564.8m  z=9.4m
+```
+
+> ⚠️ **Delete caches from earlier `--dataset-type generic` KITTI runs.** The
+> descriptor cache stores poses, so those `.npz` files hold the uncorrected
+> camera-frame ones. They cannot be reused by mistake — the KITTI loader's
+> cache tag is `kitti<seq>_n<N>s<S>`, which cannot collide — but they are
+> wrong and take up space.
+
+### Tune the height slices
+
+KITTI's Velodyne sits on a car roof and sees a shallow slab, where the shipped
+defaults (`z_max: 20.0`, `N_h: 10` — 2 m per slice) expect something taller.
+On sequence 00 a submap occupies only **two** height slices, and stage 1 refuses
+to score any pair sharing fewer than `stage1.min_shared_rows: 3`. The result is
+a MINT score of exactly `0.0` for *every* candidate — including a scan against
+itself — which reads like catastrophic retrieval rather than a configuration
+mismatch:
+
+```bash
+inlier match a.npz a.npz          # stage 1 MINT 0.000000  <- gated, not compared
+inlier match a.npz a.npz --set encoder.z_max=8.0   # stage 1 MINT 1.000000
+```
+
+`inlier match` says which of the two it is, rather than printing a bare zero.
+Lower `encoder.z_max` to something like `8.0` (0.8 m slices) so a flat sensor
+fills enough of them, or lower `stage1.min_shared_rows`. This is independent of
+the pose-frame correction above — both had to be fixed.
+
+### Layout
+
+Both layouts in circulation are read, and `--dataset` may name either the
+benchmark root or a single sequence directory:
+
+```text
+<root>/
+├── sequences/00/
+│   ├── velodyne/000000.bin ...   # float32 x y z reflectance
+│   ├── calib.txt                 # P0..P3, then Tr: velodyne -> rectified cam 0
+│   ├── times.txt                 # seconds, one per scan
+│   └── poses.txt                 # SemanticKITTI keeps them here
+└── poses/00.txt                  # the official devkit keeps them here
+```
+
+A per-sequence `calib.txt` wins over a root-level copy, because the `Tr` rows
+genuinely differ between sequences. `times.txt` is what makes
+`--exclusion seconds=` usable — without it you are limited to `frames=` and
+`metres=`. Poses are published for sequences **00–10** only; 11–21 are the
+held-out test split and an evaluation has nothing to score against.
+
 ## Overlap Ground Truth
 
 [`inlier gt build`](../inlier/eval/overlap_build.py) also supports generic data — pass `--dataset-type generic --db-path ... --q-path ...` (same scans + poses layout, plus the DB→Q `--transform`), or the explicit `--db-scans`/`--db-poses`/`--q-scans`/`--q-poses` to compute the pairwise overlap matrix, just as in [Building Overlap Ground Truth](helipr-benchmark.md#building-overlap-ground-truth) for HeLiPR.

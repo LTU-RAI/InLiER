@@ -71,13 +71,30 @@ def load_encoded(path) -> EncodedScan:
     path = Path(path)
     if not path.exists():
         raise FileNotFoundError(f"no such encoding: {path}")
-    with np.load(path, allow_pickle=True) as data:
-        missing = [k for k in REQUIRED_KEYS if k not in data]
-        if missing:
-            raise ValueError(
-                f"{path} is missing {', '.join(missing)}; it does not look "
-                f"like an `inlier encode` output.")
-        held = {k: data[k] for k in data.files}
+    if path.suffix.lower() != ".npz":
+        # Worth catching by name: `inlier match` sits next to commands that
+        # take images, and numpy's answer to a .png is an unpickling
+        # traceback that says nothing about what was actually wanted.
+        raise ValueError(
+            f"{path} is not an .npz. `inlier match` compares two "
+            f"`inlier encode` outputs -- the token/keypoint files, not "
+            f"figures. Produce them with, e.g.:\n"
+            f"  inlier encode --dataset-type kitti --dataset <root> "
+            f"--sequence 00 --n-scans 10 --index 0 -o a.npz")
+    try:
+        with np.load(path, allow_pickle=True) as data:
+            missing = [k for k in REQUIRED_KEYS if k not in data]
+            if missing:
+                raise ValueError(
+                    f"{path} is missing {', '.join(missing)}; it does not "
+                    f"look like an `inlier encode` output.")
+            held = {k: data[k] for k in data.files}
+    except ValueError:
+        raise
+    except Exception as exc:      # numpy raises UnpicklingError, BadZipFile, ...
+        raise ValueError(
+            f"{path} could not be read as a .npz ({type(exc).__name__}: "
+            f"{exc}). `inlier match` expects an `inlier encode` output.") from exc
 
     voxel = held.get("voxel_size")
     try:
@@ -134,6 +151,28 @@ def check_compatible(query: EncodedScan, db: EncodedScan, cfg) -> None:
             + "\nPass the config they were encoded with via -c/--config.")
 
 
+def mint_gate(query: "EncodedScan", db: "EncodedScan", cfg) -> Tuple[int, int]:
+    """``(shared_height_rows, required)`` -- why a MINT of 0 may mean nothing.
+
+    Stage 1 refuses to score a pair that shares fewer than
+    ``stage1.min_shared_rows`` occupied height slices, and returns 0.0 rather
+    than a low score.  A flat sensor -- a car-roof Velodyne under the default
+    ``z_max`` of 20 m, say -- can light up only two slices and be gated out
+    entirely, which looks identical to "these places are unrelated".  Telling
+    the two apart is exactly what this tool is for.
+    """
+    from inlier.core.reference.InLiER import InLiER as _Encoder
+
+    N_h, N_r, N_s, N_a = cfg.N_h, cfg.N_r, cfg.N_s, cfg.N_a
+    q_hb, _, _, _ = _Encoder.unpack_token_ids(query.token_id, N_r, N_s, N_a)
+    d_hb, _, _, _ = _Encoder.unpack_token_ids(db.token_id, N_r, N_s, N_a)
+    if q_hb.size == 0 or d_hb.size == 0:
+        return 0, int(getattr(cfg, "min_shared_rows", 0) or 0)
+    ceiling = min(int(q_hb.max()), int(d_hb.max()))
+    shared = int(np.count_nonzero(np.unique(q_hb) <= ceiling))
+    return shared, N_h
+
+
 @dataclass
 class PairResult:
     """What each stage said about one pair."""
@@ -146,6 +185,8 @@ class PairResult:
     verify: Optional[Any] = None            # VerifyOutput, or None if skipped
     gicp: Optional[Any] = None              # VerifyOutput after refinement
     gicp_on: str = ""                       # "raw clouds" / "keypoints" / ""
+    #: set when stage 1 returned 0.0 because the pair was gated, not compared
+    mint_gate: Optional[Tuple[int, int]] = None     # (shared rows, required)
 
     @property
     def shift(self) -> int:
@@ -165,6 +206,9 @@ class PairResult:
     def as_dict(self) -> Dict[str, Any]:
         """JSON-shaped summary, for ``--json``."""
         out: Dict[str, Any] = {"stage1_mint": round(float(self.mint), 6)}
+        if self.mint_gate is not None:
+            out["stage1_gated"] = {"shared_height_rows": self.mint_gate[0],
+                                   "min_shared_rows": self.mint_gate[1]}
         if self.beam is not None:
             out["stage2_beam"] = round(float(self.beam), 6)
             out["stage2_azimuth_shift"] = int(self.beam_shift or 0)
@@ -220,6 +264,15 @@ def match_pair(
     # A one-entry database always returns that entry, so the score is defined
     # even when it is a terrible match -- which is exactly what to show.
     result = PairResult(mint=float(out.scores[0]) if len(out.scores) else 0.0)
+
+    # A zero here is ambiguous: unrelated places and gated-out pairs look the
+    # same.  Work out which, so the report can say so rather than leaving it
+    # to be rediscovered.
+    if result.mint == 0.0:
+        shared, _ = mint_gate(query, db, resolved.inlier)
+        required = int(getattr(resolved.shortlist, "min_shared_rows", 0) or 0)
+        if shared < required:
+            result.mint_gate = (shared, required)
 
     if not resolved.skip_stage2:
         b = matcher.beam_score(query.tokens, [0], topk=1, verbose=False)

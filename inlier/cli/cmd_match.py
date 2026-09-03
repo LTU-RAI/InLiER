@@ -11,9 +11,13 @@ make those numbers mean something.  Here there is one pair and no ground
 truth, so every number is a diagnostic rather than a result.
 
 The point cloud is not stored in an ``.npz`` -- tokens and keypoints are -- so
-the geometry panels reload it from the provenance the encoding carries.  When
-that is impossible (the dataset moved, or the file predates the provenance),
-the keypoints are drawn alone and the figure says so.
+the geometry panels reload it from the provenance the encoding carries, using
+the loader that wrote it.  That last part matters for KITTI: its clouds only
+reconstruct correctly through ``KITTI_Handler``, which applies the
+camera->velodyne correction, so the encoding records which loader built it
+rather than leaving it to be guessed.  When reloading is impossible (the
+dataset moved, or the file predates the provenance), the keypoints are drawn
+alone and the figure says so.
 """
 
 from __future__ import annotations
@@ -73,6 +77,31 @@ def register(subparsers, parent) -> None:
     p.set_defaults(func=run)
 
 
+def _handler_for(prov):
+    """The loader that built this encoding, from its recorded provenance.
+
+    KITTI has to be told apart: its clouds only reconstruct correctly through
+    ``KITTI_Handler``, which applies the camera->velodyne correction from
+    ``calib.txt``.  Rebuilding a KITTI submap with the generic loader would
+    not merely fail to find the scans -- if it found them it would accumulate
+    them with camera-frame poses, which is the bug ``--dataset-type kitti``
+    exists to fix.
+    """
+    from inlier.eval.datasets.generic import Generic_Handler
+    from inlier.eval.datasets.kitti import SCAN_SUBDIR, KITTI_Handler
+
+    root = Path(prov.get("dataset", ""))
+    kind = prov.get("dataset_type")
+    if kind is None and str(root):
+        # Encoded before the loader was recorded: a sequence directory holding
+        # velodyne/ is KITTI and nothing else.
+        kind = "kitti" if (root / SCAN_SUBDIR).is_dir() else "generic"
+    if kind == "kitti":
+        return KITTI_Handler(root, prov.get("sequence") or root.name,
+                             verbose=False)
+    return Generic_Handler(verbose=False)
+
+
 def _reload_points(scan):
     """Recover the scan's points from the provenance the encoding carries.
 
@@ -82,9 +111,7 @@ def _reload_points(scan):
     prov = scan.provenance
     try:
         if "submap_index" in prov and "dataset" in prov:
-            from inlier.eval.datasets.generic import Generic_Handler
-
-            data = Generic_Handler(verbose=False).load_generic(
+            data = _handler_for(prov).load_generic(
                 Path(prov["dataset"]),
                 n_scans=int(prov.get("n_scans", 1)),
                 stride=int(prov.get("stride", prov.get("n_scans", 1))),
@@ -93,6 +120,8 @@ def _reload_points(scan):
         if "source" in prov:
             from inlier.eval.datasets.generic import Generic_Handler
 
+            # A bare scan needs no poses, so the generic reader is right for
+            # a .bin whatever wrote it.
             return Generic_Handler(verbose=False).load_scan_file(
                 Path(prov["source"])), ""
     except (OSError, ValueError, RuntimeError, IndexError) as exc:
@@ -101,12 +130,23 @@ def _reload_points(scan):
                   f"provenance existed?)")
 
 
-def _print_report(query, db, result) -> None:
+def _print_report(query, db, result, shortlist=None) -> None:
+    from inlier.viz.match import mint_label
+
     v = result.verify
     print(f"\nquery    {query.path}  ({query.label}, {len(query.token_id)} tokens)")
     print(f"database {db.path}  ({db.label}, {len(db.token_id)} tokens)")
     print()
-    print(f"  stage 1  MINT   {result.mint:.6f}")
+    print(f"  stage 1  MINT   {result.mint:.6f}   ({mint_label(shortlist)})")
+    if result.mint_gate is not None:
+        shared, required = result.mint_gate
+        print(f"                  ^ not scored: the pair shares {shared} "
+              f"occupied height slice(s), and stage1.min_shared_rows requires "
+              f"{required}.")
+        print(f"                    A 0 here means 'not compared', not 'not "
+              f"alike'. Lower encoder.z_max (or raise N_h) so a flat sensor "
+              f"fills more slices,")
+        print(f"                    or lower stage1.min_shared_rows.")
     if result.beam is not None:
         print(f"  stage 2  BEAM   {result.beam:.6f}   "
               f"(azimuth shift {result.beam_shift})")
@@ -179,7 +219,7 @@ def run(args: argparse.Namespace) -> int:
                         verbose=not quiet)
 
     if not quiet:
-        _print_report(query, db, result)
+        _print_report(query, db, result, resolved.shortlist)
         for note in notes:
             print(f"  note: point cloud not reloaded -- {note}")
 
@@ -207,7 +247,8 @@ def run(args: argparse.Namespace) -> int:
         from inlier.viz.match import match_figure
 
         figure = match_figure(query, db, result, resolved.inlier,
-                              q_points=q_points, db_points=db_points)
+                              q_points=q_points, db_points=db_points,
+                              shortlist=resolved.shortlist)
         if notes:
             figure.text(0.01, 0.005, "point clouds not shown: " + "; ".join(notes),
                         fontsize=7.5, color="#d62728")

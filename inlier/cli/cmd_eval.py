@@ -130,19 +130,26 @@ def _register_online_lcd(sub, parent) -> None:
         ),
     )
     p.add_argument("--dataset-type", dest="dataset_type",
-                   choices=("helipr", "generic"), default="helipr",
+                   choices=("helipr", "generic", "kitti"), default="helipr",
                    help="which loader to use (default: helipr)")
-    ## One sequence, so one path: the HeLiPR root, or the generic sequence
-    ## directory.  Unlike cross-session there is no second session to name.
+    ## One sequence, so one path: the HeLiPR root, the generic sequence
+    ## directory, or the KITTI odometry root.  Unlike cross-session there is
+    ## no second session to name.
     p.add_argument("--dataset", type=str,
-                   help="HeLiPR dataset root, or the sequence directory "
-                        "with --dataset-type generic")
+                   help="HeLiPR dataset root; the sequence directory with "
+                        "--dataset-type generic; or the KITTI odometry root "
+                        "(the folder holding sequences/), or a single KITTI "
+                        "sequence directory")
+    ## Shared by helipr and kitti, so it cannot live in either group: argparse
+    ## rejects the same option string twice.
+    p.add_argument("--sequence", type=str,
+                   help="sequence name (helipr), or the two-digit sequence "
+                        "id with --dataset-type kitti, e.g. 00")
 
     helipr = p.add_argument_group("helipr options")
-    helipr.add_argument("--sequence", type=str, help="sequence name")
     helipr.add_argument("--sensor", type=str, help="sensor, e.g. Ouster or Aeva")
 
-    generic = p.add_argument_group("generic options")
+    generic = p.add_argument_group("generic / kitti options")
     generic.add_argument("--n-scans", dest="n_scans", type=int, default=1,
                          help="scans accumulated per submap (default: 1)")
     generic.add_argument("--stride", type=int, default=None,
@@ -200,6 +207,11 @@ def run_online_lcd(args) -> int:
         source = HeLiPRSource(args.dataset, args.sequence, args.sensor,
                               verbose=not quiet)
         name, sensor = args.sequence, args.sensor
+    elif args.dataset_type == "kitti":
+        stride = args.stride if args.stride is not None else args.n_scans
+        source = _kitti_source(args, n_scans=args.n_scans, stride=stride,
+                               verbose=not quiet)
+        name, sensor = source.sequence, source.describe()["sensor"]
     else:
         stride = args.stride if args.stride is not None else args.n_scans
         source = _generic_source(args, n_scans=args.n_scans, stride=stride,
@@ -267,6 +279,51 @@ def _generic_source(args, *, prefix: str = "", n_scans: int, stride,
                              pose_file=pose_file)
     return GenericSource.from_paths(scans_dir, pose_file, n_scans, stride,
                                     transform, verbose=verbose)
+
+
+def _kitti_source(args, *, n_scans: int, stride, verbose: bool = True):
+    """Build a ``KITTISource``, resolving the sequence id here rather than there.
+
+    The convenience of pointing ``--dataset`` straight at a sequence directory
+    has to be settled before the source exists: ``KITTISource.tag`` names a
+    descriptor-cache file and ``describe()`` is written into the results JSON,
+    and neither may depend on what is currently on disk.
+    """
+    from inlier.eval.datasets import KITTISource
+    from inlier.eval.datasets.kitti import SCAN_SUBDIR, normalise_sequence
+
+    if not args.dataset:
+        raise ValueError("--dataset-type kitti requires --dataset")
+    root = Path(args.dataset)
+    if not root.is_dir():
+        raise FileNotFoundError(f"--dataset {root} is not a directory")
+
+    for flag, value in (("--scans", getattr(args, "scans_dir", None)),
+                        ("--poses", getattr(args, "pose_file", None)),
+                        ("--sensor", getattr(args, "sensor", None))):
+        if value:
+            raise ValueError(
+                f"{flag} does not apply to --dataset-type kitti: the loader "
+                f"finds {SCAN_SUBDIR}/, the poses and calib.txt from the KITTI "
+                f"layout itself, and KITTI odometry has one LiDAR.")
+
+    is_sequence_dir = (root / SCAN_SUBDIR).is_dir()
+    if is_sequence_dir:
+        sequence = normalise_sequence(args.sequence or root.name)
+        if args.sequence and normalise_sequence(args.sequence) != normalise_sequence(root.name):
+            raise ValueError(
+                f"--dataset {root} is itself sequence {root.name!r}, but "
+                f"--sequence says {args.sequence!r}. Drop --sequence, or point "
+                f"--dataset at the KITTI root instead.")
+    elif args.sequence:
+        sequence = normalise_sequence(args.sequence)
+    else:
+        raise ValueError(
+            "--dataset-type kitti needs --sequence (e.g. --sequence 00), "
+            f"unless --dataset points straight at a sequence directory -- one "
+            f"containing {SCAN_SUBDIR}/.")
+
+    return KITTISource(root, sequence, n_scans, stride, verbose=verbose)
 
 
 def _require(args, names, why):

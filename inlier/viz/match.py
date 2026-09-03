@@ -53,7 +53,17 @@ def _bev(ax, cloud, kp, color, title: str, extent: float) -> None:
         ax.scatter(kp[:, 0], kp[:, 1], s=14.0, c=color, linewidths=0.0,
                    zorder=3, label=f"{len(kp)} keypoints")
     _square(ax, extent, title)
-    ax.legend(loc="upper right", fontsize=7, framealpha=0.8)
+    _legend(ax)
+
+
+def _legend(ax) -> None:
+    """Legend only when something is in it -- matplotlib warns otherwise.
+
+    A scan can legitimately yield no keypoints (too few points to describe),
+    and the panel should still draw.
+    """
+    if ax.get_legend_handles_labels()[0]:
+        ax.legend(loc="upper right", fontsize=7, framealpha=0.8)
 
 
 def _square(ax, extent: float, title: str) -> None:
@@ -90,7 +100,7 @@ def _draw_alignment(ax, q_cloud, q_kp, db_cloud, db_kp, pose, extent) -> None:
 
     _square(ax, extent, "query aligned onto database" if pose is not None
             else "combined -- no pose estimated")
-    ax.legend(loc="upper right", fontsize=7, framealpha=0.8)
+    _legend(ax)
 
 
 def aligned_query(pose, q_kp):
@@ -98,14 +108,38 @@ def aligned_query(pose, q_kp):
     return _apply(pose, q_kp) if (pose is not None and len(q_kp)) else q_kp
 
 
-def _score_rows(result, cfg):
-    """``(label, value, ceiling, detail)`` per stage, in pipeline order.
+#: What each ``stage1.mint_scoring`` setting actually computes.  The figure
+#: must name the configured one: the default is not cosine, and a mislabelled
+#: metric is worse than an unlabelled one.
+MINT_SCORING = {
+    "cosine": "cosine over the MINT row",
+    "raw_intersection": "raw histogram intersection",
+    "l1_intersection": "L1-normalised histogram intersection",
+}
 
-    ``ceiling`` is what the bar is drawn against.  Every score here is already
-    a ratio in [0, 1], so the bars are directly comparable -- which is the
-    whole reason to draw them rather than print four numbers.
+
+def mint_label(shortlist) -> str:
+    """How stage 1 scored, spelled out, from the config that ran."""
+    if shortlist is None:
+        return "MINT row similarity"
+    scoring = str(getattr(shortlist, "mint_scoring", "")).lower()
+    mode = str(getattr(shortlist, "mint_mode", "")).lower()
+    what = MINT_SCORING.get(scoring, scoring or "MINT row similarity")
+    return f"{what} ({mode})" if mode else what
+
+
+def _score_rows(result, cfg, shortlist=None):
+    """``(label, value, detail)`` per stage, in pipeline order.
+
+    Every score here is a ratio in [0, 1], so the bars share an axis and can
+    be read against each other -- which is the whole reason to draw them
+    rather than print four numbers.
     """
-    rows = [("stage 1  MINT", result.mint, "cosine over the MINT row")]
+    gate = result.mint_gate
+    detail = (mint_label(shortlist) if gate is None else
+              f"NOT SCORED: {gate[0]} shared height slice(s) < "
+              f"min_shared_rows={gate[1]}")
+    rows = [("stage 1  MINT", result.mint, detail)]
     if result.beam is not None:
         rows.append(("stage 2  BEAM", result.beam,
                      f"bit Jaccard, yaw shift {result.beam_shift}/{cfg.N_a} "
@@ -167,6 +201,12 @@ def _draw_details(ax, result, rows) -> None:
                      + f" in {g.n_iterations} iters")
         lines.append(f"  {g.n_inliers:,} inliers, error {g.final_error:.4f}")
 
+    if result.mint_gate is not None:
+        lines.append("")
+        lines.append("stage 1 was gated, not compared -- a 0 there does not")
+        lines.append("mean the two places are unalike.  Lower encoder.z_max")
+        lines.append("(or raise N_h), or lower stage1.min_shared_rows.")
+
     color = "0.15"
     if v is not None and not v.success:
         color = BAD_COLOR
@@ -189,13 +229,16 @@ def match_figure(
     *,
     q_points: Optional[np.ndarray] = None,
     db_points: Optional[np.ndarray] = None,
+    shortlist=None,
     title: Optional[str] = None,
     max_cloud_points: int = MAX_CLOUD_POINTS,
 ):
     """Render one pair: geometry, both descriptor stacks, and the scores.
 
     ``query``/``db`` are :class:`~inlier.eval.pair.EncodedScan`, ``result`` a
-    :class:`~inlier.eval.pair.PairResult`.  Point clouds are optional: an
+    :class:`~inlier.eval.pair.PairResult`, and ``shortlist`` the resolved
+    stage-1 config -- passed only so the MINT row can name the metric that
+    actually ran, which is ``l1_intersection`` by default and not cosine.  Point clouds are optional: an
     ``.npz`` stores tokens and keypoints, not the scan, so the cloud is drawn
     only when the caller could recover it.  Returns the ``Figure``.
     """
@@ -268,7 +311,7 @@ def match_figure(
         ax_beam.set_title(f"$\\mathcal{{A}}$  BEAM codes (stage 2) -- {name}",
                           fontsize=10)
 
-    rows = _score_rows(result, cfg)
+    rows = _score_rows(result, cfg, shortlist)
     _draw_bars(fig.add_subplot(grid[1, 2]), rows)
     _draw_details(fig.add_subplot(grid[2:, 2]), result, rows)
 

@@ -258,3 +258,72 @@ def test_cli_takes_exactly_two_files(capsys, encodings):
     code, _ = _cli(capsys, "match", str(encodings[0]), str(encodings[1]),
                    str(encodings[0]))
     assert code == 2                               # argparse: unrecognised
+
+
+def test_a_non_npz_input_says_what_was_wanted(capsys, tmp_path):
+    """`inlier match` sits next to commands that take images.
+
+    numpy's own answer to a .png is an unpickling traceback that mentions
+    neither the file type nor what the command actually wanted.
+    """
+    image = tmp_path / "figure.png"
+    image.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 32)
+    code, out = _cli(capsys, "match", str(image), str(image))
+    assert code == 1                       # a clean exit, not a traceback
+    assert "is not an .npz" in out.err
+    assert "inlier encode" in out.err
+
+
+def test_a_corrupt_npz_is_reported_rather_than_raised(capsys, tmp_path):
+    bad = tmp_path / "broken.npz"
+    bad.write_bytes(b"not a zip file at all")
+    code, out = _cli(capsys, "match", str(bad), str(bad))
+    assert code == 1
+    assert "could not be read as a .npz" in out.err
+
+
+# --- naming the metric that actually ran -----------------------------------
+
+
+def test_the_mint_row_names_the_configured_scoring(capsys, encodings):
+    """The default is `l1_intersection`, not cosine.
+
+    A hardcoded "cosine" label was wrong for every run using the shipped
+    config, and a mislabelled metric is worse than an unlabelled one -- the
+    number is right, so nothing else gives the mistake away.
+    """
+    code, out = _cli(capsys, "match", str(encodings[0]), str(encodings[1]))
+    assert code == 0
+    assert "L1-normalised histogram intersection" in out.out
+    assert "cosine" not in out.out
+
+    code, out = _cli(capsys, "match", str(encodings[0]), str(encodings[1]),
+                     "--set", "stage1.mint_scoring=cosine")
+    assert code == 0
+    assert "cosine over the MINT row" in out.out
+
+
+def test_the_two_scorings_really_do_differ(encodings, resolved):
+    """Otherwise the label would be pedantry rather than a correction."""
+    import dataclasses
+
+    from inlier.eval.pair import load_encoded, match_pair
+
+    q, db = (load_encoded(p) for p in encodings)
+    l1 = match_pair(resolved, q, db).mint
+    cos = dataclasses.replace(
+        resolved, shortlist=dataclasses.replace(resolved.shortlist,
+                                                mint_scoring="cosine"))
+    assert match_pair(cos, q, db).mint != pytest.approx(l1)
+
+
+def test_mint_label_covers_every_configured_scoring():
+    from inlier.core.Dataclasses import ShortlistConfig
+    from inlier.viz.match import MINT_SCORING, mint_label
+
+    for scoring in MINT_SCORING:
+        cfg = ShortlistConfig(mint_scoring=scoring, mint_mode="compact")
+        assert MINT_SCORING[scoring] in mint_label(cfg)
+    # The default must be one of them, or the figure falls back to a vague label.
+    assert ShortlistConfig().mint_scoring in MINT_SCORING
+    assert mint_label(None) == "MINT row similarity"
