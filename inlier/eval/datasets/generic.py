@@ -7,11 +7,21 @@ Generic_Handler.py
 Expected dataset layout:
     /path/to/dataset/
         scans/
-            000000.pcd
+            000000.pcd             # .bin is also read (KITTI velodyne float32)
             000001.pcd
             ...
         poses_kitti.txt            # preferred: 12 floats per line (row-major 3x4)
         poses_tum.txt              # alternative: "#timestamp x y z qx qy qz qw"
+
+That layout is a convenience, not a requirement.  ``scans_dir`` and
+``pose_file`` name the two paths directly, for the common case of a dataset
+whose scans and poses were never arranged into one tree::
+
+    Generic_Handler(scans_dir="/data/seq/velodyne", pose_file="/data/gt/odom.txt")
+
+An explicitly named pose file is *sniffed* rather than trusted to be named
+sensibly: 12 fields on the first data line is KITTI, 8 is TUM.  Nothing else
+is a valid line in either format, so the two cannot be confused.
 """
 
 from pathlib import Path
@@ -19,15 +29,76 @@ from typing import List, Optional, Sequence, Tuple
 
 import numpy as np
 
+#: Scan formats ``list_scan_files`` will pick up, lowercase.
+SCAN_SUFFIXES = (".pcd", ".bin")
+
+#: Floats per point in a ``.bin`` scan when the file size does not settle it.
+#: KITTI's velodyne dumps are ``x y z intensity``, and everything that copied
+#: the format kept the four; a file that is not a multiple of four floats is
+#: something else and gets inferred instead.
+DEFAULT_BIN_COLS = 4
+
 
 class Generic_Handler:
-    def __init__(self, verbose: bool = True):
+    """Reader for a folder of scans plus a pose file.
+
+    ``scans_dir`` and ``pose_file`` override the conventional layout when the
+    data does not sit in one directory.  Either may be given alone: naming the
+    poses while letting the scans default to ``<dataset>/scans`` is a perfectly
+    ordinary case.
+
+    ``bin_cols`` forces the point stride of ``.bin`` scans.  Leave it ``None``
+    unless a file is inferred wrongly -- see :meth:`_bin_cols`.
+    """
+
+    def __init__(self, verbose: bool = True, scans_dir=None, pose_file=None,
+                 bin_cols: Optional[int] = None):
         self.verbose = verbose
+        self.scans_dir = Path(scans_dir) if scans_dir is not None else None
+        self.pose_file = Path(pose_file) if pose_file is not None else None
+        if bin_cols is not None and bin_cols < 3:
+            raise ValueError(f"bin_cols must be >= 3 (x, y, z), got {bin_cols}")
+        self.bin_cols = bin_cols
 
     # ------------------------------------------------------------------
     # Pose loading
     # ------------------------------------------------------------------
+    @staticmethod
+    def _sniff_pose_format(path: Path) -> str:
+        """``"kitti"`` or ``"tum"``, from the first line that carries data.
+
+        An explicitly named pose file cannot be identified by its name, and
+        need not be: a KITTI line is 12 numbers and a TUM line is 8, so the
+        field count settles it.  Guessing from the filename would quietly
+        mis-read ``odometry.txt``.
+        """
+        with open(path, "r") as f:
+            for raw in f:
+                line = raw.strip()
+                if not line or line.startswith("#"):
+                    continue
+                n = len(line.split())
+                if n == 12:
+                    return "kitti"
+                if n == 8:
+                    return "tum"
+                raise ValueError(
+                    f"{path}: first data line has {n} fields, which is neither "
+                    f"KITTI (12: row-major 3x4) nor TUM (8: timestamp x y z "
+                    f"qx qy qz qw).\n  {line[:100]}")
+        raise ValueError(f"{path} contains no pose lines (only blanks/comments).")
+
     def _pose_file(self, dataset_dir: Path) -> Tuple[Path, str]:
+        """``(path, format)`` for the poses, honouring an explicit override."""
+        if self.pose_file is not None:
+            if not self.pose_file.exists():
+                raise FileNotFoundError(f"Pose file not found: {self.pose_file}")
+            if self.pose_file.is_dir():
+                raise IsADirectoryError(
+                    f"Pose file is a directory: {self.pose_file} -- name the "
+                    f"file itself, not the folder holding it.")
+            return self.pose_file, self._sniff_pose_format(self.pose_file)
+
         kitti = dataset_dir / "poses_kitti.txt"
         tum = dataset_dir / "poses_tum.txt"
         if kitti.exists():
@@ -36,7 +107,8 @@ class Generic_Handler:
             return tum, "tum"
         raise FileNotFoundError(
             f"No pose file found in {dataset_dir} "
-            f"(expected poses_kitti.txt or poses_tum.txt)."
+            f"(expected poses_kitti.txt or poses_tum.txt). "
+            f"Name one explicitly instead if the poses live elsewhere."
         )
 
     def _timestamps_beside(self, dataset_dir: Path, n_poses: int) -> List[float]:
@@ -113,7 +185,9 @@ class Generic_Handler:
                     T[:3, 3] = [tx, ty, tz]
                 poses.append(T)
         if fmt == "kitti":
-            stamps = self._timestamps_beside(dataset_dir, len(poses))
+            # Beside the *pose file*, which is the dataset dir in the
+            # conventional layout and the override's folder otherwise.
+            stamps = self._timestamps_beside(pose_path.parent, len(poses))
         if self.verbose:
             where = "" if not stamps else (
                 " with timestamps" if fmt == "tum" else " + poses_tum.txt timestamps")
@@ -124,27 +198,102 @@ class Generic_Handler:
     # ------------------------------------------------------------------
     # Scan discovery / loading
     # ------------------------------------------------------------------
+    def scan_dir(self, dataset_dir: Path) -> Path:
+        """Where the scans are: the override, else ``<dataset_dir>/scans``."""
+        return self.scans_dir if self.scans_dir is not None else Path(dataset_dir) / "scans"
+
     def list_scan_files(self, dataset_dir: Path) -> List[Path]:
-        dataset_dir = Path(dataset_dir)
-        scans_dir = dataset_dir / "scans"
+        """Scan paths in name order.
+
+        ``.pcd`` and ``.bin`` are both read, but a directory holding *both* is
+        rejected rather than merged: the usual cause is the same sequence
+        exported twice, and quietly returning 2N files for N poses would fail
+        much later as a pose/scan count mismatch.
+        """
+        scans_dir = self.scan_dir(dataset_dir)
         if not scans_dir.exists():
             raise FileNotFoundError(f"Scan directory not found: {scans_dir}")
-        files = sorted(scans_dir.glob("*.pcd"))
-        if not files:
-            raise FileNotFoundError(f"No .pcd files under {scans_dir}")
-        return files
+        if not scans_dir.is_dir():
+            raise NotADirectoryError(
+                f"Scan path is not a directory: {scans_dir} -- name the folder "
+                f"holding the scans, not one scan.")
 
-    def load_scan_file(self, pcd_path: Path) -> np.ndarray:
-        """Read a single .pcd file and return (N, 3) float32 points.
+        by_suffix = {suf: sorted(p for p in scans_dir.iterdir()
+                                 if p.suffix.lower() == suf)
+                     for suf in SCAN_SUFFIXES}
+        present = {suf: files for suf, files in by_suffix.items() if files}
+        if not present:
+            raise FileNotFoundError(
+                f"No {' or '.join(SCAN_SUFFIXES)} files under {scans_dir}")
+        if len(present) > 1:
+            counts = ", ".join(f"{len(f)} {suf}" for suf, f in present.items())
+            raise RuntimeError(
+                f"{scans_dir} holds more than one scan format ({counts}). "
+                f"Point at a directory with just one, or split them.")
+        return next(iter(present.values()))
 
-        Non-finite points are dropped here rather than downstream: sensors
-        write NaN for invalid returns, and the points are then accumulated
-        into submaps and handed to GICP as raw clouds, neither of which
-        tolerates them.
+    def _bin_cols(self, path: Path, n_floats: int) -> int:
+        """Floats per point in a ``.bin`` scan.
+
+        ``bin_cols`` wins if it was set.  Otherwise the answer is 4: KITTI's
+        velodyne dumps are ``x y z intensity`` and the format was copied
+        wholesale.  Deliberately *not* inferred when 4 divides evenly -- a
+        point count divisible by 12 is equally consistent with 3 and with 6,
+        and silently picking one would scramble the coordinates instead of
+        failing.  Only a file that 4 cannot explain gets inferred, and only
+        when exactly one width fits.
         """
-        import open3d as o3d  # lazy import
-        pcd = o3d.io.read_point_cloud(str(pcd_path))
-        pts = np.asarray(pcd.points, dtype=np.float32)
+        if self.bin_cols is not None:
+            if n_floats % self.bin_cols:
+                raise ValueError(
+                    f"{path}: {n_floats} float32 values is not a multiple of "
+                    f"bin_cols={self.bin_cols}")
+            return self.bin_cols
+        if n_floats % DEFAULT_BIN_COLS == 0:
+            return DEFAULT_BIN_COLS
+        fits = [c for c in (3, 5, 6) if n_floats % c == 0]
+        if len(fits) == 1:
+            if self.verbose:
+                print(f"  [Generic_Handler] {path.name}: {n_floats} floats is "
+                      f"not x,y,z,intensity; reading {fits[0]} per point")
+            return fits[0]
+        raise ValueError(
+            f"{path}: {n_floats} float32 values fits "
+            f"{fits or 'no'} floats per point, so the layout is ambiguous. "
+            f"Pass bin_cols=N to say how wide a point is.")
+
+    def _load_bin(self, path: Path) -> np.ndarray:
+        """KITTI-style raw float32 dump -> (N, 3).
+
+        The file is a flat little-endian float32 array with no header, so the
+        only thing to get right is how many values make up a point.
+        """
+        raw = np.fromfile(path, dtype=np.float32)
+        if raw.size == 0:
+            return np.zeros((0, 3), dtype=np.float32)
+        cols = self._bin_cols(path, int(raw.size))
+        return raw.reshape(-1, cols)[:, :3]
+
+    def load_scan_file(self, scan_path: Path) -> np.ndarray:
+        """Read one scan and return (N, 3) float32 points.
+
+        ``.pcd`` goes through open3d; ``.bin`` is read directly.  Non-finite
+        points are dropped here rather than downstream: sensors write NaN for
+        invalid returns, and the points are then accumulated into submaps and
+        handed to GICP as raw clouds, neither of which tolerates them.
+        """
+        scan_path = Path(scan_path)
+        suffix = scan_path.suffix.lower()
+        if suffix == ".bin":
+            pts = self._load_bin(scan_path)
+        elif suffix == ".pcd":
+            import open3d as o3d  # lazy import
+            pcd = o3d.io.read_point_cloud(str(scan_path))
+            pts = np.asarray(pcd.points, dtype=np.float32)
+        else:
+            raise ValueError(
+                f"Unsupported scan format {suffix!r}: {scan_path} "
+                f"(expected one of {', '.join(SCAN_SUFFIXES)})")
         return pts[np.isfinite(pts).all(axis=1)]
 
     # ------------------------------------------------------------------
@@ -165,7 +314,9 @@ class Generic_Handler:
         submap is ``T_i`` (the global pose of the keyframe).
 
         Args:
-            dataset_dir: path containing scans/ and a pose file.
+            dataset_dir: path containing scans/ and a pose file.  Ignored for
+                         whichever of the two the handler was given an
+                         explicit ``scans_dir``/``pose_file`` for.
             n_scans:     number of consecutive scans per submap (>= 1).
             stride:      step between consecutive submaps. Defaults to n_scans
                          (non-overlapping submaps).
@@ -196,9 +347,12 @@ class Generic_Handler:
         poses, stamps = self.load_poses(dataset_dir)
         scan_files = self.list_scan_files(dataset_dir)
         if len(poses) != len(scan_files):
+            # Name both paths: with explicit overrides they need not share a
+            # parent, and "in <dataset>" would point at neither.
+            pose_path, _ = self._pose_file(dataset_dir)
             raise RuntimeError(
-                f"Pose/scan count mismatch in {dataset_dir}: "
-                f"{len(poses)} poses vs {len(scan_files)} scans."
+                f"Pose/scan count mismatch: {len(poses)} poses in {pose_path} "
+                f"vs {len(scan_files)} scans in {self.scan_dir(dataset_dir)}."
             )
 
         # The window rule is shared with build_overlap_data via
@@ -256,7 +410,7 @@ class Generic_Handler:
             print(
                 f"  [Generic_Handler] built {len(submap_points)} submap(s)"
                 f"{scope} (n_scans={n_scans}, stride={stride}) from "
-                f"{len(poses)} scans in {dataset_dir.name}"
+                f"{len(poses)} scans in {self.scan_dir(dataset_dir)}"
             )
 
         return {
@@ -312,13 +466,33 @@ class GenericSource:
         stride: Optional[int] = None,
         transform=None,
         verbose: bool = True,
+        scans_dir=None,
+        pose_file=None,
+        bin_cols: Optional[int] = None,
     ) -> None:
         self.path = Path(path)
         self.n_scans = int(n_scans)
         self.stride = int(stride) if stride is not None else int(n_scans)
         self.transform = transform
         self.verbose = verbose
-        self._handler = Generic_Handler(verbose=verbose)
+        self.scans_dir = Path(scans_dir) if scans_dir is not None else None
+        self.pose_file = Path(pose_file) if pose_file is not None else None
+        self.bin_cols = bin_cols
+        self._handler = Generic_Handler(verbose=verbose, scans_dir=scans_dir,
+                                        pose_file=pose_file, bin_cols=bin_cols)
+
+    @classmethod
+    def from_paths(cls, scans_dir, pose_file, *args, path=None, **kw):
+        """Build from the two explicit paths, with no dataset directory.
+
+        ``path`` still exists downstream as the sequence's *identity* -- it
+        names the cache entry, the run directory and the tag -- so it defaults
+        to the scans directory's parent, which for ``/data/seq05/velodyne`` is
+        the sequence.  Pass it when that guess would be unhelpful.
+        """
+        scans_dir = Path(scans_dir)
+        return cls(path if path is not None else scans_dir.parent,
+                   *args, scans_dir=scans_dir, pose_file=pose_file, **kw)
 
     def load(self, **_):
         from inlier.eval.datasets.base import Sequence
@@ -328,13 +502,22 @@ class GenericSource:
         return seq.transformed(self.transform)
 
     def describe(self):
-        return {
+        d = {
             "dataset_type": self.name,
             "path": str(self.path),
             "n_scans": self.n_scans,
             "stride": self.stride,
             "transform": self.transform is not None,
         }
+        # Only recorded when they were actually used, so a run against the
+        # conventional layout keeps the description it has always had.
+        if self.scans_dir is not None:
+            d["scans_dir"] = str(self.scans_dir)
+        if self.pose_file is not None:
+            d["pose_file"] = str(self.pose_file)
+        if self.bin_cols is not None:
+            d["bin_cols"] = self.bin_cols
+        return d
 
     @classmethod
     def from_describe(cls, described, *, root=None, verbose=False):
@@ -342,12 +525,18 @@ class GenericSource:
 
         The submap accumulation (``n_scans``/``stride``) comes back with it, so
         a replay cannot silently re-window the sequence differently from the
-        run it is replaying.  ``transform`` is not restored here: the protocol
-        applies it to the poses, not the loader (see ``cross_session.run``).
+        run it is replaying.  So do explicit ``scans_dir``/``pose_file`` paths,
+        which is what lets a replay find the scans of a run that never had a
+        conventional dataset directory.  ``transform`` is not restored here:
+        the protocol applies it to the poses, not the loader (see
+        ``cross_session.run``).
         """
         return cls(root or described["path"],
                    described.get("n_scans", 1), described.get("stride"),
-                   verbose=verbose)
+                   verbose=verbose,
+                   scans_dir=described.get("scans_dir"),
+                   pose_file=described.get("pose_file"),
+                   bin_cols=described.get("bin_cols"))
 
     @property
     def tag(self) -> str:

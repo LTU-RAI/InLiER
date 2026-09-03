@@ -16,7 +16,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from inlier.cli._common import user_path
+from inlier.cli._common import add_generic_layout_flags, user_path
 
 SCAN_SUFFIXES = (".pcd", ".ply", ".bin", ".npy")
 VIZ_SUFFIXES = (".png", ".pdf", ".svg", ".jpg", ".jpeg")
@@ -60,6 +60,7 @@ def register(subparsers, parent) -> None:
     data.add_argument("--stride", type=int, default=None, metavar="N",
                       help="step between submaps (default: --n-scans, "
                            "i.e. non-overlapping)")
+    add_generic_layout_flags(data)
     which = data.add_mutually_exclusive_group()
     which.add_argument("--index", type=int, default=None, metavar="I",
                        help="which submap to encode (default: 0); "
@@ -145,6 +146,34 @@ def _submap_selection(args) -> list:
     return [0 if args.index is None else args.index]
 
 
+def _submap_mode(args) -> bool:
+    """Whether this invocation builds submaps rather than encoding one file."""
+    return args.dataset is not None or getattr(args, "scans_dir", None) is not None
+
+
+def _generic_root(args) -> Path:
+    """The sequence's identity: ``--dataset``, or the scans folder's parent.
+
+    Only ever used as a *name* -- the provenance record, the figure title, the
+    range check's error message.  Where the data is actually read from is the
+    handler's business, which is why an explicit ``--scans`` needs no dataset
+    directory to sit under.
+    """
+    if args.dataset is not None:
+        root = Path(args.dataset)
+        if not root.is_dir():
+            raise FileNotFoundError(f"--dataset {root} is not a directory")
+        return root
+    scans_dir = getattr(args, "scans_dir", None)
+    if scans_dir is None:
+        raise ValueError("no dataset: pass --dataset, or --scans with --poses")
+    if getattr(args, "pose_file", None) is None:
+        raise ValueError(
+            "--scans without --dataset also needs --poses: there is nowhere "
+            "else to look for the poses")
+    return Path(scans_dir).parent
+
+
 def _load_submaps(args, quiet: bool):
     """Build the requested submaps, reading only the scans they need.
 
@@ -164,11 +193,10 @@ def _load_submaps(args, quiet: bool):
     from inlier.eval.datasets.generic import Generic_Handler
     from inlier.eval.submaps import submap_count
 
-    root = Path(args.dataset)
-    if not root.is_dir():
-        raise FileNotFoundError(f"--dataset {root} is not a directory")
-
-    handler = Generic_Handler(verbose=not quiet)
+    root = _generic_root(args)
+    handler = Generic_Handler(verbose=not quiet,
+                              scans_dir=getattr(args, "scans_dir", None),
+                              pose_file=getattr(args, "pose_file", None))
     stride = args.n_scans if args.stride is None else args.stride
     total = submap_count(len(handler.list_scan_files(root)), args.n_scans, stride)
 
@@ -240,7 +268,7 @@ def _submap_items(args, quiet: bool):
                 "stride": stride,
                 "submap_index": index,
                 "keyframe_pose": pose,
-                "dataset": str(args.dataset),
+                "dataset": str(_generic_root(args)),
             },
         ))
     return items, len(items) > 1
@@ -256,10 +284,10 @@ def run(args: argparse.Namespace) -> int:
     viz = args.viz or args.viz_save is not None
     if args.output is None and not viz:
         raise ValueError("nothing to do: pass -o/--output, --viz, or both.")
-    if (args.input is None) == (args.dataset is None):
+    if (args.input is None) == (not _submap_mode(args)):
         raise ValueError(
-            "pass either a scan path or --dataset ROOT, not both and not "
-            "neither.")
+            "pass either a scan path or a dataset (--dataset ROOT, or --scans "
+            "with --poses), not both and not neither.")
     if args.input is not None:
         for flag, value in (("--n-scans", args.n_scans != 1),
                             ("--stride", args.stride is not None),
@@ -267,14 +295,14 @@ def run(args: argparse.Namespace) -> int:
                             ("--range", args.submap_range is not None)):
             if value:
                 raise ValueError(
-                    f"{flag} needs --dataset: submaps are built from poses, "
+                    f"{flag} needs a dataset: submaps are built from poses, "
                     f"which a bare scan path does not carry.")
 
     resolved = resolved_config(args, mode="deploy")
     voxel_size = args.voxel_size if args.voxel_size is not None else resolved.voxel_size
     quiet = getattr(args, "quiet", False)
 
-    if args.dataset is not None:
+    if _submap_mode(args):
         items, many = _submap_items(args, quiet)
     else:
         items, many = _file_items(args, quiet)
@@ -355,5 +383,5 @@ def _title(args, label: str, extra: dict) -> str:
     if not extra:
         return str(Path(args.input) if Path(args.input).is_file()
                    else Path(args.input) / label)
-    return (f"{Path(args.dataset).name}  {label}  "
+    return (f"{_generic_root(args).name}  {label}  "
             f"(n_scans={extra['n_scans']}, stride={extra['stride']})")

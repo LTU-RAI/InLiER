@@ -295,7 +295,7 @@ def test_snake_spelling_still_reaches_a_command(capsys, generic_dataset):
     code, out = _run(capsys, "doctor", "--dataset", str(generic_dataset),
                      "--dataset_type", "generic")
     assert code == 0
-    assert "generic -- <root>/scans/*.pcd" in out.out
+    assert "generic -- <root>/scans/*.{pcd,bin}" in out.out
 
 
 def test_snake_spelling_survives_passthrough_to_a_wrapped_script(capsys):
@@ -303,7 +303,9 @@ def test_snake_spelling_survives_passthrough_to_a_wrapped_script(capsys):
     with pytest.raises(SystemExit) as exc:
         main(["gt", "build", "--dataset_type", "generic"])
     assert exc.value.code == 2
-    assert "--db-path and --q-path are required" in capsys.readouterr().err
+    # Any error from the wrapped parser proves the rewrite landed; this one
+    # says the generic mode was actually selected.
+    assert "generic needs --db-path or --db-scans" in capsys.readouterr().err
 
 
 def test_help_offers_one_spelling_per_flag(capsys):
@@ -568,7 +570,8 @@ def test_submap_flags_need_a_dataset(capsys, scan_file, tmp_path):
     code, out = _run(capsys, "encode", str(scan_file), "--n-scans", "10",
                      "-o", str(tmp_path / "x.npz"))
     assert code == 1
-    assert "--n-scans needs --dataset" in out.err
+    # "a dataset", not "--dataset": --scans/--poses name one too.
+    assert "--n-scans needs a dataset" in out.err
 
 
 def test_a_scan_path_and_a_dataset_are_mutually_exclusive(

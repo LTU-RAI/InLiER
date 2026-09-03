@@ -203,7 +203,7 @@ inlier eval cross-session --dataset-type generic \
 |---|---|
 | loader | `--dataset-type {helipr,generic}` (default: `helipr`) |
 | helipr | `--dataset`, `--db-sequence`, `--q-sequence`, `--pair`, `--overlap-dir` |
-| generic | `--db-path`, `--q-path`, `--overlap-file`, `--n-db`, `--n-q`, `--stride-db`, `--stride-q`, `--transform`, `--no-transform` |
+| generic | `--db-path`, `--q-path`, `--db-scans`, `--db-poses`, `--q-scans`, `--q-poses`, `--overlap-file`, `--n-db`, `--n-q`, `--stride-db`, `--stride-q`, `--transform`, `--no-transform` |
 | ground truth | `--overlap-threshold` (default: 0.3), `--max-pose-dist` (default: 25.0, `0` disables), `--no-strict-gt-check` |
 | output | `-o/--output-dir` (default: `results`), `--cache-dir` (default: `cache_inlier`, `''` disables), `--threshold-policy {max_precision,max_f1,fixed}`, `--threshold` |
 
@@ -278,6 +278,11 @@ retrieval numbers. Two populations, both labelled, neither silently mixed.
 
 `seconds=` is the one unit that costs extra: the descriptor cache stores poses
 but not timestamps, so that window alone re-reads the sequence.
+
+With `--dataset-type generic`, `--scans DIR` and `--poses FILE` name the two
+paths directly when the data is not laid out as `<dataset>/scans` beside
+`poses_kitti.txt`, and `.bin` scans are read alongside `.pcd`. See
+[Test Your Own Data](custom-data.md#if-your-data-isnt-laid-out-that-way).
 
 #### `--search-radius`
 

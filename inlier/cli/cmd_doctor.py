@@ -21,6 +21,8 @@ import argparse
 import importlib.util
 from pathlib import Path
 
+from inlier.cli._common import add_generic_layout_flags
+
 OK = "ok"
 WARN = "warn"
 FAIL = "FAIL"
@@ -41,6 +43,7 @@ def register(subparsers, parent) -> None:
     p.add_argument("--dataset-type", dest="dataset_type",
                    choices=("helipr", "generic"), default="helipr",
                    help="layout to check --dataset against (default: helipr)")
+    add_generic_layout_flags(p)
     p.add_argument("--overlap-dir", dest="overlap_dir",
                    type=str, default="overlap_matrices",
                    help="directory of overlap matrices to check for sidecars")
@@ -129,8 +132,12 @@ def run(args: argparse.Namespace) -> int:
         _row(FAIL, "config", str(exc).splitlines()[0])
         failures += 1
 
-    if args.dataset:
-        failures += _check_dataset(Path(args.dataset), args.dataset_type)
+    scans_dir = getattr(args, "scans_dir", None)
+    pose_file = getattr(args, "pose_file", None)
+    if args.dataset or scans_dir is not None:
+        # --scans alone is enough to check: the root is only the heading.
+        root = Path(args.dataset) if args.dataset else Path(scans_dir).parent
+        failures += _check_dataset(root, args.dataset_type, scans_dir, pose_file)
 
     warnings += _check_overlap_sidecars(Path(args.overlap_dir))
 
@@ -146,18 +153,22 @@ def run(args: argparse.Namespace) -> int:
 
 LAYOUTS = {
     "helipr": "<root>/<sequence>/Undistorted/<sensor>/*.bin",
-    "generic": "<root>/scans/*.pcd + poses_kitti.txt or poses_tum.txt",
+    "generic": "<root>/scans/*.{pcd,bin} + poses_kitti.txt or poses_tum.txt",
 }
 
 
-def _check_dataset(root: Path, dataset_type: str) -> int:
+def _check_dataset(root: Path, dataset_type: str,
+                   scans_dir: Path = None, pose_file: Path = None) -> int:
     print(f"\ndataset  {root}")
-    _row(OK, "layout", f"{dataset_type} -- {LAYOUTS[dataset_type]}")
-    if not root.exists():
+    explicit = scans_dir is not None or pose_file is not None
+    _row(OK, "layout",
+         "generic -- explicit paths" if explicit
+         else f"{dataset_type} -- {LAYOUTS[dataset_type]}")
+    if not root.exists() and not explicit:
         _row(FAIL, "root", "does not exist")
         return 1
-    if dataset_type == "generic":
-        return _check_generic(root)
+    if dataset_type == "generic" or explicit:
+        return _check_generic(root, scans_dir, pose_file)
     return _check_helipr(root)
 
 
@@ -207,38 +218,58 @@ def _check_helipr(root: Path) -> int:
     return failures
 
 
-def _check_generic(root: Path) -> int:
-    """Flat scans/ + a pose file, per ``Generic_Handler``."""
-    if not _looks_generic(root) and _looks_helipr(root):
+def _check_generic(root: Path, scans_dir: Path = None,
+                   pose_file: Path = None) -> int:
+    """Flat scans/ + a pose file, per ``Generic_Handler``.
+
+    ``scans_dir``/``pose_file`` mirror the loader's overrides, so a dataset
+    that was never arranged into one tree can still be checked before a run.
+    """
+    from inlier.eval.datasets.generic import Generic_Handler
+
+    explicit = scans_dir is not None or pose_file is not None
+    if not explicit and not _looks_generic(root) and _looks_helipr(root):
         _row(FAIL, "layout mismatch", "this looks like a HeLiPR tree -- "
                                       "pass --dataset-type helipr")
         return 1
 
     failures = 0
-    scans_dir = root / "scans"
-    if not scans_dir.is_dir():
-        _row(FAIL, "scans/", "not found")
-        return 1
+    handler = Generic_Handler(verbose=False, scans_dir=scans_dir,
+                              pose_file=pose_file)
 
-    scans = sorted(scans_dir.glob("*.pcd"))
-    if not scans:
-        _row(FAIL, "scans/", "no .pcd files")
+    label = str(scans_dir) if scans_dir is not None else "scans/"
+    try:
+        scans = handler.list_scan_files(root)
+    except (FileNotFoundError, NotADirectoryError, RuntimeError) as exc:
+        _row(FAIL, label, str(exc))
+        scans = []
         failures += 1
     else:
-        _row(OK, "scans/", f"{len(scans):,} .pcd files")
+        _row(OK, label, f"{len(scans):,} {scans[0].suffix} files")
 
     n_poses = None
-    for name, kind in (("poses_kitti.txt", "kitti"), ("poses_tum.txt", "tum")):
-        pose_file = root / name
-        if not pose_file.exists():
-            continue
-        n_poses = sum(1 for line in pose_file.read_text().splitlines()
-                      if line.strip() and not line.startswith("#"))
-        _row(OK, "poses", f"{name} ({kind}), {n_poses:,} poses")
-        break
+    if pose_file is not None:
+        try:
+            poses, _ = handler.load_poses(root)
+        except (OSError, ValueError) as exc:
+            _row(FAIL, "poses", str(exc).splitlines()[0])
+            failures += 1
+        else:
+            n_poses = len(poses)
+            kind = handler._sniff_pose_format(pose_file)
+            _row(OK, "poses", f"{pose_file} ({kind}), {n_poses:,} poses")
     else:
-        _row(FAIL, "poses", "no poses_kitti.txt or poses_tum.txt")
-        failures += 1
+        for name, kind in (("poses_kitti.txt", "kitti"), ("poses_tum.txt", "tum")):
+            candidate = root / name
+            if not candidate.exists():
+                continue
+            n_poses = sum(1 for line in candidate.read_text().splitlines()
+                          if line.strip() and not line.startswith("#"))
+            _row(OK, "poses", f"{name} ({kind}), {n_poses:,} poses")
+            break
+        else:
+            _row(FAIL, "poses", "no poses_kitti.txt or poses_tum.txt")
+            failures += 1
 
     # Generic_Handler.load_generic raises on this, well after the submap build
     # has started; it is cheap to catch here instead.
@@ -253,14 +284,35 @@ def _check_generic(root: Path) -> int:
 
 
 def _check_sample_scan(path: Path) -> int:
-    """Read one scan: catches an unreadable file, and NaN-heavy sensors."""
+    """Read one scan: catches an unreadable file, and NaN-heavy sensors.
+
+    Goes through the loader rather than open3d directly, so a ``.bin`` gets
+    read the same way -- including the point-stride inference, which is the
+    part most worth failing here rather than mid-run.
+    """
     try:
         import numpy as np
-        import open3d as o3d
+
+        from inlier.eval.datasets.generic import Generic_Handler
     except ImportError:
         return 0
 
-    points = np.asarray(o3d.io.read_point_cloud(str(path)).points)
+    handler = Generic_Handler(verbose=False)
+    try:
+        # The finite filter is the loader's; count against the raw points so
+        # the NaN warning below still means something.
+        points = handler.load_scan_file(path)
+        if path.suffix.lower() == ".bin":
+            raw = np.fromfile(path, dtype=np.float32)
+            cols = handler._bin_cols(path, int(raw.size)) if raw.size else 4
+            points = raw.reshape(-1, cols)[:, :3] if raw.size else points
+        else:
+            import open3d as o3d
+            points = np.asarray(o3d.io.read_point_cloud(str(path)).points)
+    except (ImportError, OSError, ValueError) as exc:
+        _row(FAIL, "sample scan", f"{path.name}: {str(exc).splitlines()[0]}")
+        return 1
+
     if points.size == 0:
         _row(FAIL, "sample scan", f"{path.name}: no points read")
         return 1

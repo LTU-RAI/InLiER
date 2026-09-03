@@ -12,6 +12,8 @@ from pathlib import Path
 
 import numpy as np
 
+from inlier.cli._common import add_generic_layout_flags
+
 
 def register(subparsers, parent) -> None:
     p = subparsers.add_parser(
@@ -50,6 +52,8 @@ def _register_cross_session(sub, parent) -> None:
     generic = p.add_argument_group("generic options")
     generic.add_argument("--db-path", dest="db_path", type=str)
     generic.add_argument("--q-path", dest="q_path", type=str)
+    add_generic_layout_flags(generic, "db", "database")
+    add_generic_layout_flags(generic, "q", "query")
     generic.add_argument("--overlap-file", dest="overlap_file", type=str)
     generic.add_argument("--n-db", dest="n_db", type=int, default=1,
                          help="scans accumulated per database submap (default: 1)")
@@ -143,6 +147,7 @@ def _register_online_lcd(sub, parent) -> None:
                          help="scans accumulated per submap (default: 1)")
     generic.add_argument("--stride", type=int, default=None,
                          help="step between submaps (default: --n-scans)")
+    add_generic_layout_flags(generic)
 
     gt = p.add_argument_group("ground truth")
     gt.add_argument("--exclusion", type=str, default="frames=100",
@@ -196,11 +201,10 @@ def run_online_lcd(args) -> int:
                               verbose=not quiet)
         name, sensor = args.sequence, args.sensor
     else:
-        _require(args, ["dataset"], "generic")
-        path = Path(args.dataset)
         stride = args.stride if args.stride is not None else args.n_scans
-        source = GenericSource(path, args.n_scans, stride, verbose=not quiet)
-        name, sensor = path.name, "q"
+        source = _generic_source(args, n_scans=args.n_scans, stride=stride,
+                                 verbose=not quiet)
+        name, sensor = source.path.name, "q"
 
     exp_dir = artifacts.experiment_dirname(
         name, sensor, name, "online",
@@ -230,6 +234,39 @@ def run_online_lcd(args) -> int:
     if not quiet:
         print("\n" + result.summary())
     return 0
+
+
+def _generic_source(args, *, prefix: str = "", n_scans: int, stride,
+                    transform=None, verbose: bool = True):
+    """Build a ``GenericSource`` from the dataset dir and/or explicit paths.
+
+    ``--dataset`` stays the sequence's identity -- it names the cache entry,
+    the run directory and the tag -- so it is only optional when both explicit
+    paths are given and the scans directory's parent can stand in for it.
+    """
+    from inlier.eval.datasets import GenericSource
+
+    dest = f"{prefix}_" if prefix else ""
+    flag = f"--{prefix}-" if prefix else "--"
+    dataset = getattr(args, f"{dest}path" if prefix else "dataset", None)
+    scans_dir = getattr(args, f"{dest}scans_dir", None)
+    pose_file = getattr(args, f"{dest}pose_file", None)
+
+    if dataset is None and scans_dir is None:
+        raise ValueError(
+            f"--dataset-type generic needs a dataset directory or "
+            f"{flag}scans; got neither")
+    if dataset is None and pose_file is None:
+        raise ValueError(
+            f"{flag}scans without a dataset directory also needs {flag}poses: "
+            f"there is nowhere else to look for the poses")
+
+    if dataset is not None:
+        return GenericSource(Path(dataset), n_scans, stride, transform,
+                             verbose=verbose, scans_dir=scans_dir,
+                             pose_file=pose_file)
+    return GenericSource.from_paths(scans_dir, pose_file, n_scans, stride,
+                                    transform, verbose=verbose)
 
 
 def _require(args, names, why):
@@ -269,18 +306,23 @@ def run_cross_session(args: argparse.Namespace) -> int:
         tag = (f"{args.db_sequence}_{db_sensor}_{args.q_sequence}_{q_sensor}"
                f"_ov{args.overlap_threshold}_pd{args.max_pose_dist}m")
     else:
-        _require(args, ["db-path", "q-path", "overlap-file"], "generic")
-        db_path, q_path = Path(args.db_path), Path(args.q_path)
+        _require(args, ["overlap-file"], "generic")
+        stride_db = args.stride_db if args.stride_db is not None else args.n_db
+        stride_q = args.stride_q if args.stride_q is not None else args.n_q
+        db_source = _generic_source(args, prefix="db", n_scans=args.n_db,
+                                    stride=stride_db, verbose=not quiet)
+        q_source = _generic_source(args, prefix="q", n_scans=args.n_q,
+                                   stride=stride_q, verbose=not quiet)
+        # Both are the sequence identity, whether it came from --db-path or was
+        # derived from --db-scans, so the default transform lookup and the run
+        # directory keep working either way.
+        db_path, q_path = db_source.path, q_source.path
         if not args.no_transform:
             candidate = Path(args.transform) if args.transform else db_path / "transform.txt"
             if candidate.exists():
                 transform = load_transform(candidate)
             elif args.transform:
                 raise FileNotFoundError(f"transform not found: {candidate}")
-        stride_db = args.stride_db if args.stride_db is not None else args.n_db
-        stride_q = args.stride_q if args.stride_q is not None else args.n_q
-        db_source = GenericSource(db_path, args.n_db, stride_db, verbose=not quiet)
-        q_source = GenericSource(q_path, args.n_q, stride_q, verbose=not quiet)
         overlap_path = Path(args.overlap_file)
         exp_dir = artifacts.experiment_dirname(
             db_path.name, "db", q_path.name, "q",
