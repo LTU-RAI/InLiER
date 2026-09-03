@@ -154,7 +154,6 @@ Step 3 writes the Recall/PR-AUC metrics (`results_*.json`), the loop-closure can
 
 ## 🔜 Roadmap
 
-- ▶️ A GT-free `inlier run` — loop closures and 6-DoF poses on data with no ground truth.
 - 🤖 ROS2 nodes for front-end agnostic loop closures, with a GTSAM based back-end.
 - 🧩 Planned integrations with KISS-ICP, FAST-LIO2 and GLIM, so InLiER can plug into the odometry front-end you already run.
 

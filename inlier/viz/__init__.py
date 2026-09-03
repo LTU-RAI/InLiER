@@ -16,7 +16,7 @@ from inlier.viz.descriptors import (  # noqa: F401
 
 __all__ = ["Descriptors", "describe", "occupancy", "popcount",
            "shape_class_labels", "encode_figure", "write_trajectory_plot",
-           "write_time_trajectory_plot"]
+           "write_time_trajectory_plot", "write_score_matrix_figure"]
 
 
 def __getattr__(name: str):
@@ -32,4 +32,8 @@ def __getattr__(name: str):
         from inlier.viz.trajectory import write_time_trajectory_plot
 
         return write_time_trajectory_plot
+    if name == "write_score_matrix_figure":
+        from inlier.viz.scores import write_score_matrix_figure
+
+        return write_score_matrix_figure
     raise AttributeError(f"module 'inlier.viz' has no attribute {name!r}")

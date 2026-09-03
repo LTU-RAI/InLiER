@@ -4,9 +4,11 @@
 
 ## More Evaluation Protocols
 
-Place recognition is evaluated under several incompatible protocols. `inlier eval` implements two of them today — [cross-session](helipr-benchmark.md#running-the-evaluation) and [online-lcd](cli.md#online-loop-closure-detection). Coming next:
+Place recognition is evaluated under several incompatible protocols. `inlier eval` implements two of them today — [cross-session](helipr-benchmark.md#running-the-evaluation) and [online-lcd](cli.md#online-loop-closure-detection).
 
-- ▶️ **`inlier run`** — produce loop closures and 6-DoF poses on data with **no ground truth**, which is what a deployment actually has.
+For data with **no ground truth** — which is what a deployment actually has —
+[`inlier run`](cli.md#producing-loop-closures) produces loop closures and their
+6-DoF poses and scores nothing, because without labels nothing can be scored.
 
 ### Two protocols we decided not to add
 

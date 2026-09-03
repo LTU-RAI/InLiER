@@ -6,3 +6,4 @@ __pycache__/
 build/
 .pytest_cache/
 .claude/
+test_results/

@@ -13,6 +13,8 @@ from pathlib import Path
 import numpy as np
 
 from inlier.cli._common import add_generic_layout_flags
+from inlier.cli._sources import (generic_source, kitti_source,
+                                 parse_exclusion, require_flags)
 
 
 def register(subparsers, parent) -> None:
@@ -97,27 +99,6 @@ def _register_cross_session(sub, parent) -> None:
     p.set_defaults(func=run_cross_session)
 
 
-def _parse_exclusion(text: str):
-    """``frames=N`` / ``seconds=S`` / ``metres=M`` -> an Exclusion.
-
-    Spelled as a unit because the three are not interchangeable: 100 frames is
-    a different window at 1 Hz than at 10 Hz, and neither equals 50 m. Making
-    the unit part of the value stops a run from being silently mis-scoped.
-    """
-    from inlier.eval.gt import Exclusion
-
-    unit, _, value = text.partition("=")
-    unit = unit.strip().lower()
-    if not value or unit not in ("frames", "seconds", "metres"):
-        raise ValueError(
-            f"--exclusion takes frames=N, seconds=S or metres=M; got {text!r}")
-    try:
-        number = int(value) if unit == "frames" else float(value)
-    except ValueError:
-        raise ValueError(f"--exclusion {unit}= needs a number, got {value!r}")
-    return Exclusion(**{unit: number})
-
-
 def _register_online_lcd(sub, parent) -> None:
     p = sub.add_parser(
         "online-lcd", parents=[parent],
@@ -200,21 +181,21 @@ def run_online_lcd(args) -> int:
     policy = args.threshold_policy
     if args.threshold_value is not None:
         policy = "fixed"
-    exclusion = _parse_exclusion(args.exclusion)
+    exclusion = parse_exclusion(args.exclusion)
 
     if args.dataset_type == "helipr":
-        _require(args, ["dataset", "sequence", "sensor"], "helipr")
+        require_flags(args, ["dataset", "sequence", "sensor"], "helipr")
         source = HeLiPRSource(args.dataset, args.sequence, args.sensor,
                               verbose=not quiet)
         name, sensor = args.sequence, args.sensor
     elif args.dataset_type == "kitti":
         stride = args.stride if args.stride is not None else args.n_scans
-        source = _kitti_source(args, n_scans=args.n_scans, stride=stride,
+        source = kitti_source(args, n_scans=args.n_scans, stride=stride,
                                verbose=not quiet)
         name, sensor = source.sequence, source.describe()["sensor"]
     else:
         stride = args.stride if args.stride is not None else args.n_scans
-        source = _generic_source(args, n_scans=args.n_scans, stride=stride,
+        source = generic_source(args, n_scans=args.n_scans, stride=stride,
                                  verbose=not quiet)
         name, sensor = source.path.name, "q"
 
@@ -248,91 +229,6 @@ def run_online_lcd(args) -> int:
     return 0
 
 
-def _generic_source(args, *, prefix: str = "", n_scans: int, stride,
-                    transform=None, verbose: bool = True):
-    """Build a ``GenericSource`` from the dataset dir and/or explicit paths.
-
-    ``--dataset`` stays the sequence's identity -- it names the cache entry,
-    the run directory and the tag -- so it is only optional when both explicit
-    paths are given and the scans directory's parent can stand in for it.
-    """
-    from inlier.eval.datasets import GenericSource
-
-    dest = f"{prefix}_" if prefix else ""
-    flag = f"--{prefix}-" if prefix else "--"
-    dataset = getattr(args, f"{dest}path" if prefix else "dataset", None)
-    scans_dir = getattr(args, f"{dest}scans_dir", None)
-    pose_file = getattr(args, f"{dest}pose_file", None)
-
-    if dataset is None and scans_dir is None:
-        raise ValueError(
-            f"--dataset-type generic needs a dataset directory or "
-            f"{flag}scans; got neither")
-    if dataset is None and pose_file is None:
-        raise ValueError(
-            f"{flag}scans without a dataset directory also needs {flag}poses: "
-            f"there is nowhere else to look for the poses")
-
-    if dataset is not None:
-        return GenericSource(Path(dataset), n_scans, stride, transform,
-                             verbose=verbose, scans_dir=scans_dir,
-                             pose_file=pose_file)
-    return GenericSource.from_paths(scans_dir, pose_file, n_scans, stride,
-                                    transform, verbose=verbose)
-
-
-def _kitti_source(args, *, n_scans: int, stride, verbose: bool = True):
-    """Build a ``KITTISource``, resolving the sequence id here rather than there.
-
-    The convenience of pointing ``--dataset`` straight at a sequence directory
-    has to be settled before the source exists: ``KITTISource.tag`` names a
-    descriptor-cache file and ``describe()`` is written into the results JSON,
-    and neither may depend on what is currently on disk.
-    """
-    from inlier.eval.datasets import KITTISource
-    from inlier.eval.datasets.kitti import SCAN_SUBDIR, normalise_sequence
-
-    if not args.dataset:
-        raise ValueError("--dataset-type kitti requires --dataset")
-    root = Path(args.dataset)
-    if not root.is_dir():
-        raise FileNotFoundError(f"--dataset {root} is not a directory")
-
-    for flag, value in (("--scans", getattr(args, "scans_dir", None)),
-                        ("--poses", getattr(args, "pose_file", None)),
-                        ("--sensor", getattr(args, "sensor", None))):
-        if value:
-            raise ValueError(
-                f"{flag} does not apply to --dataset-type kitti: the loader "
-                f"finds {SCAN_SUBDIR}/, the poses and calib.txt from the KITTI "
-                f"layout itself, and KITTI odometry has one LiDAR.")
-
-    is_sequence_dir = (root / SCAN_SUBDIR).is_dir()
-    if is_sequence_dir:
-        sequence = normalise_sequence(args.sequence or root.name)
-        if args.sequence and normalise_sequence(args.sequence) != normalise_sequence(root.name):
-            raise ValueError(
-                f"--dataset {root} is itself sequence {root.name!r}, but "
-                f"--sequence says {args.sequence!r}. Drop --sequence, or point "
-                f"--dataset at the KITTI root instead.")
-    elif args.sequence:
-        sequence = normalise_sequence(args.sequence)
-    else:
-        raise ValueError(
-            "--dataset-type kitti needs --sequence (e.g. --sequence 00), "
-            f"unless --dataset points straight at a sequence directory -- one "
-            f"containing {SCAN_SUBDIR}/.")
-
-    return KITTISource(root, sequence, n_scans, stride, verbose=verbose)
-
-
-def _require(args, names, why):
-    missing = [n for n in names if not getattr(args, n.replace("-", "_"), None)]
-    if missing:
-        raise ValueError(f"--dataset-type {why} requires: "
-                         + ", ".join("--" + n for n in missing))
-
-
 def run_cross_session(args: argparse.Namespace) -> int:
     from inlier.cli._common import resolved_config
     from inlier.eval import artifacts, overlap as overlapmod
@@ -348,7 +244,7 @@ def run_cross_session(args: argparse.Namespace) -> int:
 
     transform = None
     if args.dataset_type == "helipr":
-        _require(args, ["dataset", "db-sequence", "q-sequence", "pair"], "helipr")
+        require_flags(args, ["dataset", "db-sequence", "q-sequence", "pair"], "helipr")
         db_sensor, q_sensor = parse_pair(args.pair)
         db_source = HeLiPRSource(args.dataset, args.db_sequence, db_sensor, verbose=not quiet)
         q_source = HeLiPRSource(args.dataset, args.q_sequence, q_sensor, verbose=not quiet)
@@ -363,12 +259,12 @@ def run_cross_session(args: argparse.Namespace) -> int:
         tag = (f"{args.db_sequence}_{db_sensor}_{args.q_sequence}_{q_sensor}"
                f"_ov{args.overlap_threshold}_pd{args.max_pose_dist}m")
     else:
-        _require(args, ["overlap-file"], "generic")
+        require_flags(args, ["overlap-file"], "generic")
         stride_db = args.stride_db if args.stride_db is not None else args.n_db
         stride_q = args.stride_q if args.stride_q is not None else args.n_q
-        db_source = _generic_source(args, prefix="db", n_scans=args.n_db,
+        db_source = generic_source(args, prefix="db", n_scans=args.n_db,
                                     stride=stride_db, verbose=not quiet)
-        q_source = _generic_source(args, prefix="q", n_scans=args.n_q,
+        q_source = generic_source(args, prefix="q", n_scans=args.n_q,
                                    stride=stride_q, verbose=not quiet)
         # Both are the sequence identity, whether it came from --db-path or was
         # derived from --db-scans, so the default transform lookup and the run

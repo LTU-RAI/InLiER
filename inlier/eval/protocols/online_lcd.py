@@ -370,24 +370,6 @@ def run(spec: OnlineLCDSpec) -> RunResult:
 
 # ---------------------------------------------------------------------------
 
-def _latency_block(latency_ms: np.ndarray, bounds: List[int]) -> Dict[str, Any]:
-    """Per-frame cost, over the frames that actually ran a query.
-
-    Frames inside the opening exclusion window do nothing but an insertion, so
-    averaging them in would report a latency no query ever experienced.
-    """
-    queried = latency_ms[[t for t, b in enumerate(bounds) if b > 0]]
-    if queried.size == 0:
-        return {"n_frames": 0}
-    return {
-        "n_frames": int(queried.size),
-        "mean_ms": round(float(queried.mean()), 3),
-        "median_ms": round(float(np.median(queried)), 3),
-        "p95_ms": round(float(np.percentile(queried, 95)), 3),
-        "max_ms": round(float(queried.max()), 3),
-    }
-
-
 def _build_results(spec, r, enc, n, n_queried, n_with_gt, effective_topk, gt_policy,
                    cand_filter, encode_time, t_s1, t_s2, t_comb, t_verify, latency_ms, bounds,
                    recalls_s1, kpct_s1, auc_s1, recalls_s2, kpct_s2, auc_s2,
@@ -456,7 +438,7 @@ def _build_results(spec, r, enc, n, n_queried, n_with_gt, effective_topk, gt_pol
             "recall": round(recall, 6),
             "f1": round(f1, 6),
         },
-        "latency": _latency_block(latency_ms, bounds),
+        "latency": artifacts.latency_block(latency_ms, bounds),
         "timing": {
             "encode_s": round(encode_time, 3),
             "stage1_s": round(t_s1, 3),

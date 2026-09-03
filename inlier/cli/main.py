@@ -53,6 +53,7 @@ COMMANDS = {
     "match": "inlier.cli.cmd_match",
     "gt": "inlier.cli.cmd_gt",
     "eval": "inlier.cli.cmd_eval",
+    "run": "inlier.cli.cmd_run",
     "play": "inlier.cli.cmd_play",
     "bench": "inlier.cli.cmd_bench",
 }
@@ -66,6 +67,7 @@ examples:
   inlier encode scan.pcd --viz              plot it and its descriptors
   inlier match a.npz b.npz --viz            score two encodings against each other
   inlier eval cross-session --help          evaluation protocols
+  inlier run --help                         loop closures, no ground truth
 
 common flags (-c/--config, --set, --backend, -q) are accepted either
 before or after the command name.

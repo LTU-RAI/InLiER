@@ -17,6 +17,13 @@ Implemented:
     are excluded.  Scored the way SLAM loop closure is scored -- F1max and
     max recall at 100% precision.
 
+``inlier run`` is not here either, and that is the point: a protocol fixes
+*both* halves above, and ``inlier run`` fixes only the first -- it produces
+loop closures on data with no ground truth and declines to say whether any of
+them is correct.  Filing it beside ``cross_session`` would make it look like a
+peer whose output belongs in the same table, which is the one reading that must
+never happen.  It lives in :mod:`inlier.eval.deploy`.
+
 Two protocols are deliberately *absent*, and stay absent -- see
 ``docs/roadmap.md`` for the long version:
 

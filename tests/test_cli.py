@@ -634,3 +634,78 @@ def test_online_lcd_rejects_a_unitless_exclusion(capsys, tmp_path, bad):
     assert code == 1
     assert "--exclusion" in out.err
     assert "Traceback" not in out.err
+
+
+# --- inlier run ------------------------------------------------------------
+#
+#  Mode is inferred from which vocabulary of flags was used, so the inference
+#  and its refusals are the part worth pinning: a wrong mode would run the
+#  whole pipeline and produce plausible output against the wrong database.
+
+def test_run_is_registered(capsys):
+    with pytest.raises(SystemExit):
+        main(["run", "--help"])
+    body = capsys.readouterr().out
+    assert "--threshold" in body and "--db-sequence" in body
+
+
+@pytest.mark.parametrize("given,cross", [
+    ({"sequence": "a", "sensor": "Ouster"}, False),
+    ({"db_sequence": "a", "q_sequence": "b"}, True),
+    ({"pair": "O-Aeva"}, True),      # --pair alone still means cross-session
+    ({"n_db": 5}, True),             # so does an accumulation flag
+    ({}, False),                     # nothing given -> stream one session
+])
+def test_run_infers_the_mode(given, cross):
+    """A prior map is named, never declared -- so the naming has to be read."""
+    from types import SimpleNamespace
+
+    from inlier.cli.cmd_run import CROSS_DESTS, SINGLE_DESTS, resolve_mode
+
+    args = SimpleNamespace(**{d: None for d in CROSS_DESTS + SINGLE_DESTS})
+    for key, value in given.items():
+        setattr(args, key, value)
+    assert resolve_mode(args) is cross
+
+
+def test_run_refuses_a_mix_of_the_two_modes(capsys, tmp_path):
+    code, out = _run(capsys, "run", "--dataset-type", "generic",
+                     "--dataset", str(tmp_path), "--sequence", "a",
+                     "--db-sequence", "b", "--threshold", "0.3")
+    assert code == 1
+    assert "cannot mix the two modes" in out.err
+    assert "--sequence" in out.err and "--db-sequence" in out.err
+
+
+def test_run_requires_a_threshold(capsys, tmp_path):
+    code, out = _run(capsys, "run", "--dataset-type", "generic",
+                     "--dataset", str(tmp_path))
+    assert code == 1
+    assert "requires --threshold" in out.err
+    assert "inlier eval" in out.err          # says where to get one
+
+
+def test_run_rejects_a_threshold_policy(capsys, tmp_path):
+    """It exists on both sibling commands, so people will reach for it."""
+    code, out = _run(capsys, "run", "--dataset-type", "generic",
+                     "--dataset", str(tmp_path), "--threshold", "0.3",
+                     "--threshold-policy", "max_f1")
+    assert code == 1
+    assert "no --threshold-policy" in out.err
+
+
+def test_run_rejects_a_zero_threshold(capsys, tmp_path):
+    """A failed verification scores exactly 0.0."""
+    code, out = _run(capsys, "run", "--dataset-type", "generic",
+                     "--dataset", str(tmp_path), "--threshold", "0")
+    assert code == 1
+    assert "must be > 0" in out.err
+
+
+def test_run_search_radius_across_sessions_needs_a_transform(capsys, tmp_path):
+    code, out = _run(capsys, "run", "--dataset-type", "helipr",
+                     "--dataset", str(tmp_path), "--db-sequence", "a",
+                     "--q-sequence", "b", "--pair", "O-O",
+                     "--search-radius", "50", "--threshold", "0.3")
+    assert code == 1
+    assert "different world frame" in out.err

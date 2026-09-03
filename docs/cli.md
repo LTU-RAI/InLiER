@@ -17,6 +17,7 @@ inlier --help
 | `inlier gt build` \| `validate` | build or sanity-check the overlap ground truth |
 | `inlier eval cross-session` | offline: full database vs full query sequence |
 | `inlier eval online-lcd` | online: one session, a growing database, causal matching |
+| `inlier run` | loop closures and 6-DoF poses on data with **no ground truth** |
 | | (`helipr`, `generic` or `kitti` data — see [Your Own Data](custom-data.md)) |
 | `inlier play` | replay a finished run as an animation |
 | `inlier bench cpp-vs-py` | time the C++ core against the numpy reference |
@@ -370,6 +371,124 @@ matcher's bound cannot express it. That is still *exact*, because the stage
 scores the entire causal set before anything is dropped; what it does mean is
 that the reported `latency` over-states a radius run, since the search itself
 still scans every causal frame.
+
+## Producing Loop Closures
+
+`inlier eval` answers "how good is this?", which needs labels. A deployment has
+none — it has scans, a drifting odometry estimate, and one question: which
+frames close a loop, and what is the constraint between them. `inlier run` is
+that command.
+
+```bash
+# single session: streams causally against its own past
+inlier run --dataset-type kitti --dataset /data/kitti --sequence 00 \
+    --n-scans 10 --exclusion seconds=30 --threshold 0.35 -o results/run
+
+# cross session: queries a fixed prior map
+inlier run --dataset-type helipr --dataset /data/HeLiPR \
+    --db-sequence Roundabout01 --q-sequence Roundabout03 --pair O-Aeva \
+    --threshold 0.35 -o results/run
+```
+
+The mode is **inferred**, not declared: naming a prior map with any `--db-*` or
+`--q-*` flag selects cross-session, otherwise it streams one session. Mixing
+the two vocabularies is an error naming both. Inference beats a `--mode` flag
+because a typo like `--db-pth` is an unrecognised argument and aborts, where a
+mistyped mode value would quietly select the wrong one.
+
+### `--threshold` is required
+
+There is no ground truth to sweep, so there is nothing to select an operating
+point *from*, and `--threshold-policy` does not exist here. Pick a threshold
+with `inlier eval` on a labelled sequence — its max-recall-at-100%-precision
+value is the usual choice — and fix it here. A default would be someone else's
+operating point silently applied to your robot.
+
+### The poses are odometry
+
+They accumulate submaps, they may bound the search, and they fill two
+diagnostic columns. **They never accept or reject a closure** — that is the
+verification score against the threshold, and nothing else. The record says
+`pose_source: "odometry"` and `ground_truth: null` so the file cannot be
+mistaken for an evaluation.
+
+> ⚠️ **`--search-radius` here is not the oracle it is in `inlier eval`.** In
+> [online-lcd](#--search-radius) the radius is measured against the
+> *ground-truth* pose, which a deployed system does not have, so it inflates
+> every metric. Here it is measured against the same drifted odometry the
+> running system already has, which is what a SLAM front-end actually does —
+> a scope choice, not a cheat. Same flag, opposite status, and
+> `candidate_filter.pose_source` in the results records which one ran.
+
+### What it writes
+
+| file | what |
+|---|---|
+| `closures_<tag>.csv` | the product: one row per accepted closure, with its 6-DoF constraint and match quality |
+| `scores_<tag>.npz` | the raw per-stage score matrices — **no decisions applied** |
+| `scores_<tag>.png` | those matrices drawn, one panel per stage |
+| `scores_<tag>.csv` | the same, readable: top-`--top-k` candidates per query, all stages joined |
+| `per_pair_verify_<tag>.csv` | the *unrefined* verify pose, so GICP cannot erase it |
+| `ranked_<tag>.csv` | stage-1 ranking |
+| `trajectory_<tag>.png` | the closures drawn, in one neutral colour |
+| `run_<tag>.json` | provenance, config, timing — and no metrics |
+
+**`closures_*.csv`** carries every candidate that verified above the threshold,
+not just the best per query: a back-end can weigh or discard them, and dropping
+them here destroys information it cannot recover. Filter on `rank == 0` if you
+only want the best. `q_scan_idx`/`q_stamp` exist because `query_idx` is a
+*submap* index that depends on `--n-scans`/`--stride` — without them a back-end
+keying on keyframes or time cannot map a row back to anything.
+
+The pose is `p_db = T @ p_query` in the sensor frame, GICP-refined where
+`refined=1`. `gicp_*` columns are blank when GICP never ran, and carry real
+values when it ran and failed — a `0` would read as "converged in 0 iterations
+with 0 error". `odom_xy_distance_m` and `odom_disagreement_m/deg` are
+diagnostics: a large distance means large accumulated drift, **not** a wrong
+closure — a correct closure across heavy drift is precisely the far-apart one.
+
+**`scores_*.npz`** holds the score matrices as the stages produced them. No
+threshold is applied and no acceptance is recorded; which closures were
+accepted lives in `closures_*.csv` and nowhere else. Two things follow:
+
+- **Not-scored is `NaN`, never `0.0`.** The stages are a funnel — MINT scores
+  the causal database, BEAM only MINT's shortlist, verify only the top-`topv` —
+  and `0.0` is a real score a stage returns (a failed verification scores
+  exactly that). Collapsing the two would claim the matcher looked at pairs it
+  never saw.
+- **Single-session matrices are lower-triangular**: a frame may only match its
+  own past, so the diagonal, everything above it, and everything inside the
+  exclusion window are `NaN`.
+
+They grow with the square of the frame count — a few hundred submaps is under a
+megabyte, a 4541-frame session at `--n-scans 1` is ~250 MB across the stages —
+so the command warns before writing a large one, and `--no-score-matrices`
+skips them (and the figure with them).
+
+**`scores_*.png`** draws the same arrays, one panel per stage, which is where
+the funnel becomes obvious: on a 405-submap campus session MINT scored 72,665
+pairs, BEAM 14,527 and verify 7,511, out of 164,025. Pale cells are the ones
+that stage never scored — they are *not* at the bottom of the colour ramp,
+because `0.0` is a real score and 2,850 of verify's cells genuinely hold it.
+The single-session panels are visibly lower-triangular, which is causality
+showing up in the picture.
+
+Colour scales are **per panel**, not shared. The stages do not measure the same
+quantity — MINT is an L1 histogram intersection, BEAM a bit-level Jaccard,
+verify a keypoint inlier ratio — so one ramp across all three would assert a
+comparability that does not exist, and would flatten the later panels into
+solid dark. Each colourbar names its own metric and its own maximum.
+
+### Two things it does not do
+
+`inlier run` uses **deploy-mode** config, where the stage score thresholds you
+configured actually prune; `inlier eval` forces them to `-2.0` so a PR sweep
+sees every candidate. So **the two will not produce the same closure set on the
+same data**, by design — `config_mode` in the results records which ran, and
+`--set stage2.score_threshold=-2` makes them comparable if you want to check.
+
+`inlier play` cannot replay a run: it needs the TP/FP labels a
+`candidates_*.csv` carries, and a run has no way to produce them honestly.
 
 ## Replaying a Run
 

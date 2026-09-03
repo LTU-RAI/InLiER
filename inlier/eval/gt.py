@@ -21,10 +21,19 @@ protocol and the retrieval bound cannot disagree.
 
 Candidate filtering
 -------------------
-:class:`RadiusFilter` restricts candidates by *true* pose distance before
-descriptor matching.  That is a geometric oracle -- a deployed system has no
-such prefilter -- so it makes results optimistic and is recorded in the results
-JSON rather than applied silently.
+:class:`RadiusFilter` restricts candidates by pose distance before descriptor
+matching, and whether that is cheating depends entirely on *whose* poses.
+
+Against ground truth -- an evaluation -- it is a geometric oracle: a deployed
+system has no such prefilter, and removing the far-away distractors for free
+makes every metric optimistic.  Against odometry -- a deployment, ``inlier
+run`` -- it is not an oracle at all, because it uses the same drifted estimate
+the system actually has, and limiting the search that way is what a real SLAM
+front-end does.
+
+Same filter, opposite status, so ``pose_source`` says which and
+``describe()`` reports it into the results JSON rather than leaving it to be
+inferred from which command wrote the file.
 """
 
 from __future__ import annotations
@@ -275,16 +284,28 @@ class CausalFilter:
                 "exclusion": self.exclusion.describe()}
 
 
+#: Where a :class:`RadiusFilter`'s positions came from.  ``ground_truth``
+#: makes the radius an oracle; ``odometry`` makes it a scope choice.
+POSE_SOURCES = ("ground_truth", "odometry")
+
+
 @dataclass
 class RadiusFilter:
-    """Causal filter plus a true-pose radius prefilter.
+    """Causal filter plus a pose-distance radius prefilter.
 
-    **This is a geometric oracle.**  Restricting candidates by ground-truth
-    pose before descriptors are compared is information a deployed system does
-    not have, and it inflates every metric: the hard far-away distractors are
-    removed for free.  Reference implementations apply it silently; here it is
-    reported in the results JSON so a number produced with it is never mistaken
-    for one produced without.
+    With ``pose_source="ground_truth"`` -- the default, and what the
+    evaluation protocols use -- **this is a geometric oracle**: restricting
+    candidates by true pose before descriptors are compared is information a
+    deployed system does not have, and it inflates every metric because the
+    hard far-away distractors are removed for free.  Reference implementations
+    apply it silently; here it is reported so a number produced with it is
+    never mistaken for one produced without.
+
+    With ``pose_source="odometry"`` it is not an oracle: the radius is
+    measured against the same drifted estimate the running system has, which
+    is what a SLAM front-end actually does.  The arithmetic is identical; only
+    the provenance of ``positions`` differs, and that is the whole difference
+    between cheating and not.
     """
 
     positions: np.ndarray
@@ -294,7 +315,20 @@ class RadiusFilter:
     arc_length: Optional[np.ndarray] = None
 
     name: str = "radius"
-    uses_pose_oracle: bool = True
+    pose_source: str = "ground_truth"
+
+    def __post_init__(self) -> None:
+        if self.pose_source not in POSE_SOURCES:
+            raise ValueError(
+                f"pose_source must be 'ground_truth' (an evaluation, where "
+                f"the radius is an oracle) or 'odometry' (a deployment, where "
+                f"it is the same drifted estimate the system already has); "
+                f"got {self.pose_source!r}")
+
+    @property
+    def uses_pose_oracle(self) -> bool:
+        """Whether this radius is information a deployed system would lack."""
+        return self.pose_source == "ground_truth"
 
     def bound(self, q: int) -> Optional[int]:
         if self.exclusion is None:
@@ -319,6 +353,7 @@ class RadiusFilter:
         return {
             "filter": self.name,
             "radius_m": float(self.radius),
-            "uses_pose_oracle": True,
+            "pose_source": self.pose_source,
+            "uses_pose_oracle": self.uses_pose_oracle,
             "exclusion": self.exclusion.describe() if self.exclusion else None,
         }
