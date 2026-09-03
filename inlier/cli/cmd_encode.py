@@ -249,7 +249,9 @@ def _file_items(args, quiet: bool):
         points, n_dropped = _load_points(scan)
         if n_dropped and not quiet:
             print(f"{scan.name}: dropped {n_dropped:,} non-finite point(s)")
-        items.append((scan.name, scan.stem, points, {}))
+        # `source` lets `inlier match` reload the cloud later; it is also the
+        # only record of where a file-mode encoding came from.
+        items.append((scan.name, scan.stem, points, {"source": str(scan)}))
     return items, len(scans) > 1 or src.is_dir()
 
 
@@ -380,7 +382,9 @@ def run(args: argparse.Namespace) -> int:
 
 
 def _title(args, label: str, extra: dict) -> str:
-    if not extra:
+    # Keyed on the submap fields, not on `extra` being empty: file-mode
+    # encodings now carry a `source` entry too.
+    if "submap_index" not in extra:
         return str(Path(args.input) if Path(args.input).is_file()
                    else Path(args.input) / label)
     return (f"{_generic_root(args).name}  {label}  "

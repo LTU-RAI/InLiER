@@ -13,6 +13,7 @@ inlier --help
 | `inlier doctor` | check the backend, dependencies, dataset layout, and ground-truth consistency |
 | `inlier config show` \| `dump` | print the effective configuration — after merging defaults, `--config`, and `--set` |
 | `inlier encode` | run just the encoder on a scan or a directory, writing keypoints + tokens, and optionally plotting them |
+| `inlier match` | score two encodings against each other, with the stage-by-stage figure |
 | `inlier gt build` \| `validate` | build or sanity-check the overlap ground truth |
 | `inlier eval cross-session` | offline: full database vs full query sequence |
 | `inlier eval online-lcd` | online: one session, a growing database, causal matching |
@@ -129,6 +130,61 @@ token radices. (Matching the GT is the evaluation's own constraint — see
 > HeLiPR has no submap accumulation: it is evaluated scan by scan
 > (`HeLiPRSource` carries no `n_scans`/`stride`, and the published results are
 > one submap per scan). Point `inlier encode` straight at a `.bin`.
+
+## Matching Two Encodings
+
+`inlier match` takes two `.npz` files from `inlier encode` and runs the
+matching stages on that pair alone:
+
+```bash
+inlier match a.npz b.npz                       # print what each stage scored
+inlier match a.npz b.npz --viz                 # and plot the comparison
+inlier match a.npz b.npz --viz-save cmp.png    # write the figure instead
+inlier match a.npz b.npz -o scores.json        # machine-readable scores
+```
+
+The flags are `inlier encode`'s: `-o` is the data output, `--viz` opens a
+window and `--viz-save` writes the figure (`--viz-dpi` sets its resolution).
+Only the data format differs — there is no `.npz` to write here, so `-o`
+carries the scores. Pointing `-o` at an image is an error naming `--viz-save`,
+rather than JSON quietly written under a `.png` name.
+
+```text
+  stage 1  MINT   0.701493
+  stage 2  BEAM   0.200000   (azimuth shift 56)
+  verify          0.313433   (42/134 keypoint inliers, 21/44 RANSAC)
+
+  VERIFIED
+    yaw +24.919 deg   t = [-1.916, -0.836, +0.034] m   RMSE 0.7391 m
+    GICP on raw clouds: converged in 3 iters, 21477 inliers, error 3687.2414
+```
+
+This answers the question you actually ask while tuning — *why did these two
+not match?* — which an evaluation answers only in aggregate, several minutes
+later. The figure puts both descriptor stacks side by side on a **shared
+colour scale**, so a difference in brightness is a difference in the
+descriptors rather than in how each panel autoscaled itself, with the two
+top-down views and a third panel showing the query transformed onto the
+database by the estimated pose.
+
+**Pairs only, by design.** No directories, no globs, no all-vs-all. Those
+belong to `inlier eval`, which has the database, the ground truth and the
+metrics to make such numbers mean something; here there is one pair and no
+ground truth, so every number is a diagnostic rather than a result.
+
+Two things worth knowing:
+
+- **The stages run with their score thresholds relaxed** (`mode="eval"`). With
+  a single candidate, a threshold would replace the number you asked for with
+  an empty result — being told "stage 2 scored 0.11" is the point.
+- **The point cloud is not in the `.npz`** — tokens and keypoints are — so the
+  geometry panels reload it from the provenance the encoding carries (the
+  dataset and submap index, or the source scan). If the dataset has moved, the
+  keypoints are drawn alone and the figure says so. `--no-clouds` skips the
+  reload deliberately, which also makes GICP refine on the keypoints.
+
+A scan matched against itself is the sanity check: MINT and BEAM both `1.0`,
+azimuth shift `0`, and an identity transform.
 
 ## Building the Ground Truth
 

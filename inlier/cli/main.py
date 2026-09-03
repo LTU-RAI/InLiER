@@ -50,6 +50,7 @@ COMMANDS = {
     "doctor": "inlier.cli.cmd_doctor",
     "config": "inlier.cli.cmd_config",
     "encode": "inlier.cli.cmd_encode",
+    "match": "inlier.cli.cmd_match",
     "gt": "inlier.cli.cmd_gt",
     "eval": "inlier.cli.cmd_eval",
     "play": "inlier.cli.cmd_play",
@@ -63,6 +64,7 @@ examples:
   inlier config show --set stage1.topk=50   with one value overridden
   inlier encode scan.pcd -o tokens.npz      encode a single scan
   inlier encode scan.pcd --viz              plot it and its descriptors
+  inlier match a.npz b.npz --viz            score two encodings against each other
   inlier eval cross-session --help          evaluation protocols
 
 common flags (-c/--config, --set, --backend, -q) are accepted either
