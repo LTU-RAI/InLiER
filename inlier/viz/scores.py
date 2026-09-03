@@ -51,25 +51,44 @@ METRIC_NAMES = {
 #: Colour for a pair the stage never scored.  Deliberately not on the ramp.
 UNSCORED_COLOR = "#e8e4dc"
 
-#: Above this many cells, drop to nearest-neighbour subsampling before
-#: rasterising.  A 4541-frame session is 20M cells per panel; matplotlib will
-#: render it, slowly, into an image far larger than any screen.
-MAX_CELLS = 4_000_000
+#: Above this many cells, block-reduce before rasterising.  Set high on
+#: purpose: a 4000-frame session still draws every pair, and only genuinely
+#: enormous runs are reduced at all.
+MAX_CELLS = 16_000_000
 
 DPI = 200
 
 
-def _subsample(m: np.ndarray, max_cells: int = MAX_CELLS):
-    """``(image, step)`` -- thinned by an integer stride if it is very large.
+def _block_max(m: np.ndarray, max_cells: int = MAX_CELLS):
+    """``(image, step)`` -- each pixel the strongest score in a step x step block.
 
-    Nearest-neighbour on purpose: averaging would blend scored cells with
-    unscored ones and turn ``NaN`` into a number, which is the one thing these
-    panels must not do.
+    **Max, not stride-sampling.**  These matrices are sparse by construction:
+    verify scores about ``topv`` pairs out of hundreds per row.  Keeping every
+    second row and column would keep a quarter of the cells and throw away
+    three quarters of the *signal* at random -- the picture would show a
+    thinner funnel than the run actually produced.  A block maximum keeps any
+    scored pair that falls in the block, so structure survives being shrunk.
+
+    **Max, not mean**, for the reason the rest of this module exists: averaging
+    would mix scored cells with unscored ones and turn ``NaN`` into a number.
+    A block with nothing in it stays ``NaN``.
     """
     if m.size <= max_cells:
         return m, 1
     step = int(np.ceil(np.sqrt(m.size / max_cells)))
-    return m[::step, ::step], step
+    rows, cols = m.shape
+    pad_r = (-rows) % step
+    pad_c = (-cols) % step
+    if pad_r or pad_c:
+        m = np.pad(m, ((0, pad_r), (0, pad_c)), constant_values=np.nan)
+    blocks = m.reshape(m.shape[0] // step, step, m.shape[1] // step, step)
+    with np.errstate(invalid="ignore"):
+        # An all-NaN block warns and returns NaN, which is the answer wanted.
+        import warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)
+            reduced = np.nanmax(blocks, axis=(1, 3))
+    return reduced, step
 
 
 def write_score_matrix_figure(
@@ -98,7 +117,7 @@ def write_score_matrix_figure(
     fig, axes = plt.subplots(1, len(panels),
                              figsize=(5.4 * len(panels), 5.8), squeeze=False)
     for ax, (name, matrix) in zip(axes[0], panels):
-        image, step = _subsample(matrix)
+        image, step = _block_max(matrix)
         # Scaled per panel, floor pinned at 0 so dark still means low.  A
         # shared 0-1 ramp is the tempting choice and the wrong one: the
         # stages do not measure the same quantity -- MINT is an L1 histogram
@@ -115,7 +134,8 @@ def write_score_matrix_figure(
             f"{STAGE_TITLES.get(name, name)}\n"
             f"{scored:,} of {matrix.size:,} pairs scored"
             + (f"  ({zeros:,} scored 0.0)" if zeros else "")
-            + (f"\nshown every {step}th frame" if step > 1 else ""),
+            + (f"\n{step}x{step} blocks, each pixel the best score in it"
+               if step > 1 else ""),
             fontsize=10)
         ax.set_xlabel("database index")
         ax.set_ylabel("query index")

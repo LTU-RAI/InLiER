@@ -479,13 +479,63 @@ verify a keypoint inlier ratio — so one ramp across all three would assert a
 comparability that does not exist, and would flatten the later panels into
 solid dark. Each colourbar names its own metric and its own maximum.
 
+Three things about these panels surprise people:
+
+**The upper triangle is empty in single-session mode**, and it is not being
+hidden — it was never computed. A streaming run lets frame *t* match only
+frames older than the exclusion window, so nothing at or above the diagonal is
+ever scored. It is *not* filled in by mirroring the lower half, because the
+matrix is not symmetric: verify's score is `n_keypoint_inliers /
+n_total_query_keypoints`, whose denominator depends on which scan is the query,
+and MINT's `min_shared_rows` gate tests the *query's* occupied height rows.
+Reflecting would invent values the matcher would not produce in that direction.
+Cross-session mode has no diagonal to speak of and fills the whole rectangle.
+
+**Whole rows are blank at the top.** Those are the frames inside the opening
+exclusion window — they have no past to query yet, so every stage is blank for
+them. With `--exclusion seconds=120` on the campus session that is the first 18
+frames, identically in all three panels.
+
+**BEAM and verify are missing whole database frames.** That is the funnel, not
+a bug: `stage1.topk_pct` decides how many of MINT's candidates reach BEAM (40
+per query here) and `verify.topv` how many reach verification (20). A database
+frame MINT never ranked that highly for *any* query never appears again — 60 of
+405 frames for BEAM, 81 for verify in that run. Raise `stage1.topk_pct` or
+`verify.topv` to widen it.
+
+The cut between stages is **by rank, never by score.** `stage1` has no
+`score_threshold` at all — nothing in the config sets a similarity a candidate
+must clear to be reranked — so the top-1 candidate always reaches BEAM whenever
+the query has any candidate at all, however weak. In that campus run the
+weakest candidate to reach BEAM scored `0.333` while the lowest MINT score
+anywhere was `0.206`: the difference is rank, not merit.
+
+`stage1.min_shared_rows` is not an exception. It does not stop a candidate
+reaching BEAM — it makes MINT *score it* `0.0`, and a zero-scored candidate
+still rides through on rank when nothing better exists. The same is true of
+`stage2.score_threshold`, which zeroes rather than removes.
+
+Very large matrices are **block-reduced by maximum** before rasterising, above
+16M cells (a 4000-frame session still draws every pair). Max, not
+stride-sampling: these matrices are sparse — verify holds about `topv` scored
+cells per row — so keeping every *n*th row and column would discard most of the
+signal at random and show a thinner funnel than the run produced. Max, not
+mean, because a mean would blend scored cells with unscored ones and turn `NaN`
+into a number. A reduced panel says so in its title.
+
 ### Two things it does not do
 
 `inlier run` uses **deploy-mode** config, where the stage score thresholds you
-configured actually prune; `inlier eval` forces them to `-2.0` so a PR sweep
-sees every candidate. So **the two will not produce the same closure set on the
-same data**, by design — `config_mode` in the results records which ran, and
-`--set stage2.score_threshold=-2` makes them comparable if you want to check.
+configured are honoured; `inlier eval` forces them to `-2.0` so a PR sweep sees
+every candidate. `config_mode` in the results records which ran.
+
+With the **shipped config this makes no difference**: `stage2.score_threshold`
+and `rerank.score_threshold` default to `0.0`, and both stages produce
+non-negative scores, so `>= 0.0` and `>= -2.0` are equally always true. The two
+commands agree on the same data. They diverge only if you set a *positive*
+threshold — and note that even then it is applied as a *zeroing*, not a filter:
+a candidate below it keeps its place in the ranking with a score of `0.0` and
+can still reach verification.
 
 `inlier play` cannot replay a run: it needs the TP/FP labels a
 `candidates_*.csv` carries, and a run has no way to produce them honestly.

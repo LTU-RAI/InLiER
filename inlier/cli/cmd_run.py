@@ -255,9 +255,11 @@ def run_deploy(args: argparse.Namespace) -> int:
             "--no-transform if the two sessions already share a frame.")
 
     # Deploy mode, not eval: this is the deployment command, so the stage
-    # score thresholds the config asks for are the ones that should prune.
-    # `inlier eval` forces them to -2.0 so a PR sweep sees everything, which
-    # is why the two commands do not produce the same closure set.
+    # score thresholds the config asks for are the ones that apply.  With the
+    # shipped defaults that changes nothing -- stage2/rerank thresholds are
+    # 0.0 and both stages score non-negatively, so eval's -2.0 is equally
+    # always satisfied -- but a config that sets a positive threshold should
+    # see it honoured here and relaxed there.
     resolved = resolved_config(args, mode="deploy")
     q_source, db_source = _sources(args, cross, quiet)
     exclusion = None if cross else parse_exclusion(

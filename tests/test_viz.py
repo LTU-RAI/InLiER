@@ -392,13 +392,49 @@ def test_unscored_cells_get_their_own_colour_not_the_low_end():
     assert tuple(cmap.get_bad()) != tuple(cmap(0.0))
 
 
-def test_a_huge_matrix_is_subsampled_not_averaged(tmp_path):
-    """Averaging would blend NaN into a number, which is the one forbidden thing."""
-    from inlier.viz.scores import _subsample
+def test_a_huge_matrix_is_block_reduced_by_max(tmp_path):
+    """Shrinking a sparse matrix must not throw the sparse signal away.
 
-    m = np.full((3000, 3000), np.nan, dtype=np.float32)
-    m[0, 0] = 0.5
-    image, step = _subsample(m, max_cells=10_000)
+    Verify scores ~`topv` pairs out of hundreds per row, so stride-sampling
+    would keep a quarter of the cells and lose three quarters of the scored
+    pairs at random -- the picture would show a thinner funnel than the run
+    produced. A block maximum keeps any scored pair in the block. And max
+    rather than mean, because a mean would blend NaN into a number.
+    """
+    from inlier.viz.scores import _block_max
+
+    m = np.full((100, 100), np.nan, dtype=np.float32)
+    for q in range(100):
+        m[q, q // 2] = 0.5 + q / 400          # one scored cell per row
+    image, step = _block_max(m, max_cells=900)
+
     assert step > 1
-    assert image.size <= m.size
-    assert image[0, 0] == pytest.approx(0.5)     # nearest-neighbour, not a mean
+    assert np.nanmax(image) == pytest.approx(np.nanmax(m))     # peak survives
+    # Every block that held a scored cell still holds one; stride-sampling
+    # keeps strictly fewer.
+    assert np.isfinite(image).sum() > np.isfinite(m[::step, ::step]).sum()
+
+
+def test_block_reduction_leaves_empty_blocks_unscored():
+    """An all-NaN block is still NaN -- not 0.0, and not a warning."""
+    import warnings
+
+    from inlier.viz.scores import _block_max
+
+    m = np.full((40, 40), np.nan, dtype=np.float32)
+    m[0, 0] = 0.25
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")        # all-NaN nanmax must not warn out
+        image, step = _block_max(m, max_cells=100)
+    assert image[0, 0] == pytest.approx(0.25)
+    assert np.isnan(image[-1, -1])
+
+
+def test_a_normal_session_is_never_reduced():
+    """The threshold is high on purpose: a 4000-frame run draws every pair."""
+    from inlier.viz.scores import MAX_CELLS, _block_max
+
+    m = np.zeros((4000, 4000), dtype=np.float32)
+    assert m.size <= MAX_CELLS
+    _, step = _block_max(m)
+    assert step == 1
