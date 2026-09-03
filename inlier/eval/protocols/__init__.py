@@ -17,14 +17,24 @@ Implemented:
     are excluded.  Scored the way SLAM loop closure is scored -- F1max and
     max recall at 100% precision.
 
-Planned (see the plan in the repository):
+Two protocols are deliberately *absent*, and stay absent -- see
+``docs/roadmap.md`` for the long version:
 
 ``online_global``
-    Fixed prior map, streaming query, decision at a fixed threshold with no
-    post-hoc selection.
+    Online localization against a fixed prior map.  A prior map is a finalized
+    database that does not change while the queries run, so arrival order
+    cannot affect what is retrievable and every query sees the whole database
+    -- which is ``cross_session``.  The retrieval is identical; the only
+    distinguishing requirement, a threshold not selected from the run being
+    scored, is ``threshold_policy="fixed"``.
 
 ``multi_session``
-    N sessions aggregated into one benchmark table.
+    N sessions aggregated into one benchmark table.  Mechanically it is N(N-1)
+    ``cross_session`` runs, which a caller can already loop over.  A table of
+    pairwise retrieval scores is not evidence about a multi-session system --
+    consistency as sessions accumulate depends on arrival order, on the
+    back-end, and on drift that appears several sessions in, none of which
+    decompose into pairs.  Left to field evaluation.
 """
 
 from inlier.eval.protocols.base import RunResult

@@ -214,6 +214,14 @@ is an error — `--no-strict-gt-check` downgrades it to a warning. The encoder
 and retrieval parameters come from `--config`; see
 [Configuration](configuration.md).
 
+> 💡 **This is also the global-localization protocol.** A fixed prior map is a
+> database that does not change while the queries run, so every query sees all
+> of it — which is what cross-session already does. Pass `--threshold` with a
+> value chosen on a *different* sequence and you are evaluating online
+> localization against a prior map, with no operating point picked from the run
+> being scored. There is no separate `online-global` command, and
+> [the roadmap](roadmap.md#online-global--already-here) says why.
+
 ### Online loop closure detection
 
 `inlier eval online-lcd` is the SLAM protocol: one session, no second sequence
