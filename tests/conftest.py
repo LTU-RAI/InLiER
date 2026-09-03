@@ -1,8 +1,13 @@
 """Shared fixtures for the C++ vs pure-numpy equivalence test-suite.
 
-Run with the system interpreter (has numpy/scipy + the built extension):
+    .venv/bin/python -m pytest tests/ -q -m "not slow"
 
-    /usr/bin/python3 -m pytest tests/ -x
+The equivalence files pair ``inlier._inlier_pybind`` against
+``inlier.core.reference``, never against ``inlier.core.InLiER`` /
+``inlier.core.InLiER_Matcher``: those are the shipped wrappers, and with the
+extension built every public stage method on them is a C++ override, so such a
+pairing compares the core against itself. ``inlier.core`` is compared to the
+reference in ``test_end_to_end.py``, which is where the wrapper belongs.
 """
 
 from __future__ import annotations
@@ -16,7 +21,7 @@ import pytest
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CACHE_DIR = os.path.join(REPO_ROOT, "cache_inlier")
 
-## Default-config cache hash for config/default.yaml (vs0.5, ns7).
+## Default-config cache hash for inlier/config/default.yaml (vs0.5, ns7).
 DEFAULT_CACHE_HASH = "a6a8d4c7cbd5"
 
 

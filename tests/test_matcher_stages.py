@@ -2,6 +2,14 @@
 C++ vs the Python implementation, on REAL cached descriptors
 (cache_inlier/*.npz).
 
+The numpy side is ``inlier.core.reference.InLiER_Matcher``, imported
+explicitly and never ``inlier.core.InLiER_Matcher``: with the extension built,
+every stage method on the latter is a C++ override, so pairing it against
+``ip._Matcher`` compares the core against itself and cannot fail. Measured on
+this fixture, those two agree bit-for-bit while the reference differs by ~6e-8
+on MINT (float32 accumulation) and not at all on BEAM or rerank — which is the
+signal the tolerances below are actually sized for.
+
 Shortlist/rerank scores use float32 accumulation in Python, double in
 C++, so comparisons are allclose(rtol=1e-5). BEAM is pure integer
 popcount Jaccard, so it's compared bit-exact. Ranking ties may legally
@@ -55,7 +63,7 @@ def db_and_queries(cached_descriptors):
 def matchers(db_and_queries):
     db, _ = db_and_queries
     py_cfg = InLiER_Config()
-    py_m = InLiER_Matcher(
+    py_m = ReferenceMatcher(
         inlier_config=py_cfg,
         shortlist_config=ShortlistConfig(**SL_KW),
         beam_score_config=BEAMScoreConfig(**BEAM_KW),
