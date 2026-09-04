@@ -82,7 +82,9 @@ def register(subparsers, parent) -> None:
                              f"frames=N, seconds=S or metres=M (default: "
                              f"{DEFAULT_EXCLUSION})")
 
-    cross = p.add_argument_group("cross session (query against a prior map)")
+    cross = p.add_argument_group(
+        "cross session (query against a prior map)",
+        "helipr or generic only -- two KITTI sequences share no world frame")
     cross.add_argument("--db-sequence", dest="db_sequence", type=str,
                        help="the prior map's sequence")
     cross.add_argument("--q-sequence", dest="q_sequence", type=str,
@@ -199,12 +201,21 @@ def _sources(args, cross: bool, quiet: bool):
                 HeLiPRSource(args.dataset, args.db_sequence, db_sensor,
                              verbose=not quiet))
     if args.dataset_type == "kitti":
-        require_flags(args, ["dataset", "db-sequence", "q-sequence"],
-                      "kitti (cross-session)")
-        return (kitti_source(args, prefix="q", n_scans=n_q, stride=stride_q,
-                             verbose=not quiet),
-                kitti_source(args, prefix="db", n_scans=n_db, stride=stride_db,
-                             verbose=not quiet))
+        # Each KITTI sequence's poses are `inv(Tr) @ P_i @ Tr` -- scan i in the
+        # velodyne frame of *that sequence's* frame 0 -- so two sequences have
+        # two unrelated origins and nothing relates them.  Retrieval would
+        # still work (no stage reads a pose), which is exactly the problem: the
+        # odometry columns would compare positions in different frames and a
+        # --search-radius would scope the search by a distance that means
+        # nothing.  Refused rather than documented, since a wrong number here
+        # looks like a right one.
+        raise ValueError(
+            "--dataset-type kitti has no cross-session mode: every KITTI "
+            "sequence's poses start at its own frame 0, so two sequences share "
+            "no world frame and the closures' odometry columns would be "
+            "meaningless. Stream one sequence (--sequence), or use "
+            "--dataset-type generic with a --transform mapping one session "
+            "into the other.")
 
     transform = None
     q_source = generic_source(args, prefix="q", n_scans=n_q, stride=stride_q,

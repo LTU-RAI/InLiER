@@ -45,7 +45,7 @@ pip install -e ".[eval]"
 
 The `[eval]` extra installs everything the evaluation workflow needs — overlap-GT building, the HeLiPR evaluation, and the playback visualization. Install just the core library (no evaluation scripts) with `pip install -e .`, and add `[test]` (`pip install -e ".[eval,test]"`) for the pytest suite.
 
-`[viz]` is separate: it installs `pyridescence` for the live 3D viewer behind [`inlier run --live`](cli.md#watching-it-run----live), and nothing else needs it — a headless evaluation should not pull in an OpenGL stack it will never open. Add it when you want the viewer:
+`[viz]` is separate: it installs `pyridescence` for the live 3D viewer behind [`inlier run --live`](cli.md#watching-it-run----live), and nothing else needs it. For a headless evaluation you do not need to pull in the OpenGL stack. Add it when you want the viewer:
 
 ```bash
 pip install -e ".[eval,viz]"
@@ -59,7 +59,7 @@ The install builds the C++ core: the project uses [`scikit-build-core`](https://
 
 ```bash
 python3 -c "import inlier; from inlier.core.InLiER import _BACKEND; print(inlier.__version__, _BACKEND)"
-# 1.0.0 cpp
+# 1.1.0 cpp
 ```
 
 `cpp` means the compiled extension loaded. `python` means it could not be imported and the pure-numpy reference implementation is being used instead — a warning is printed at import time in that case, with the underlying `ImportError`.

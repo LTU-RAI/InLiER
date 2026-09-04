@@ -80,6 +80,40 @@ The evaluation auto-detects `<db_path>/transform.txt` if it exists; pass `--tran
 
 Sparse single scans (solid-state, or low-resolution spinning units) generally need accumulation for the height-slice keypoints to be stable.
 
+## Evaluation
+
+```bash
+inlier eval cross-session --dataset-type generic \
+    --config config/default.yaml \
+    --db-path /path/to/database \
+    --q-path  /path/to/query \
+    --transform /path/to/transform.txt \
+    --overlap-file /path/to/overlap.txt \
+    --overlap-threshold 0.2 --max-pose-dist 25.0 \
+    --n-db 10 --n-q 10 --stride-db 1 --stride-q 1 \
+    --output-dir results/generic_dataset
+```
+
+`--transform` defaults to `<db_path>/transform.txt` if present, and `--no-transform` disables it when both sequences already share a world frame. Outputs match the HeLiPR driver: `results_*.json`, `candidates_*.csv`, `ranked_*.csv`, the per-pair verify poses and the trajectory plot land under `--output-dir`; the descriptor caches go to `--cache-dir`.
+
+## Playback
+
+`inlier play` replays a generic run the same way it replays a HeLiPR one:
+
+```bash
+inlier play \
+    --run-dir results/generic_dataset/dbcamp-db-qcamp-q_vs0.5_cs1_nh10_nr20_na60_ns7 \
+    --cache-dir cache_inlier
+```
+
+<p align=center>
+  <img src="../figures/campus.gif" alt="InLiER loop-closure playback on the campus dataset" width="90%"/>
+</p>
+
+Everything it needs — the two dataset paths, `--n-db` / `--stride-db` and their query counterparts, the DB→Q transform, and the tag the filenames use — is read back out of the `results_*.json`. That is deliberate: retyping the submap accumulation would let a replay window the sequence differently from the run it is replaying. The only thing you may need to add is `--dataset`, if the folders have moved since the run.
+
+Replaying a generic run re-reads and re-accumulates every submap from the `.pcd` files (the descriptor cache spares the encoding, not the disk), so expect the load to take a while on a long sequence.
+
 ## KITTI Odometry
 
 `--dataset-type kitti` reads the [KITTI odometry benchmark](https://www.cvlibs.net/datasets/kitti/eval_odometry.php)
@@ -99,10 +133,7 @@ directory (one containing `velodyne/`). Cross-session, `gt build` and
 ### Why it needs its own loader
 
 KITTI's ground-truth poses are in the **left rectified camera** frame, while the
-scans in `velodyne/*.bin` are in the velodyne frame. Read verbatim the two
-disagree, and nothing downstream can tell: the positions are still finite,
-still monotonic, still plot. On sequence 00 the raw pose translations span
-x=565 m, **y=15 m**, z=498 m — the vertical axis is `y`.
+scans in `velodyne/*.bin` are in the velodyne frame. The vertical axis is `y`.
 
 That breaks two things. Every distance InLiER computes is **XY-only**
 (`--max-pose-dist`, `--search-radius`, and the arc length behind
@@ -123,12 +154,6 @@ flag to turn it off.
 ```text
   [ ok ] pose frame             velodyne (z is vertical): x=498.5m  y=564.8m  z=9.4m
 ```
-
-> ⚠️ **Delete caches from earlier `--dataset-type generic` KITTI runs.** The
-> descriptor cache stores poses, so those `.npz` files hold the uncorrected
-> camera-frame ones. They cannot be reused by mistake — the KITTI loader's
-> cache tag is `kitti<seq>_n<N>s<S>`, which cannot collide — but they are
-> wrong and take up space.
 
 ### Tune the height slices
 
@@ -203,37 +228,3 @@ inlier gt build \
 A stride of 1 keeps one submap per scan, so the overlap matrix stays at full resolution (`M_db × M_q` with `M ≈ number of scans`) at the cost of a longer build. Leaving `--stride-*` out defaults it to `n`, giving non-overlapping submaps and a ~10× smaller matrix.
 
 > ⚠️ `--n-db` / `--n-q` / `--stride-db` / `--stride-q` **must match what you later pass to** [`inlier eval cross-session`](../inlier/eval/protocols/cross_session.py) and to [`inlier encode --dataset`](cli.md#encoding-submaps) — the matrix is indexed by submap, so any difference misaligns the GT against the retrieval results. `inlier gt build` writes the values into an `overlap_*.json` file next to the matrix and the evaluation refuses to run when they disagree.
-
-## Evaluation
-
-```bash
-inlier eval cross-session --dataset-type generic \
-    --config config/default.yaml \
-    --db-path /path/to/database \
-    --q-path  /path/to/query \
-    --transform /path/to/transform.txt \
-    --overlap-file /path/to/overlap.txt \
-    --overlap-threshold 0.2 --max-pose-dist 25.0 \
-    --n-db 10 --n-q 10 --stride-db 1 --stride-q 1 \
-    --output-dir results/generic_dataset
-```
-
-`--transform` defaults to `<db_path>/transform.txt` if present, and `--no-transform` disables it when both sequences already share a world frame. Outputs match the HeLiPR driver: `results_*.json`, `candidates_*.csv`, `ranked_*.csv`, the per-pair verify poses and the trajectory plot land under `--output-dir`; the descriptor caches go to `--cache-dir`.
-
-## Playback
-
-`inlier play` replays a generic run the same way it replays a HeLiPR one:
-
-```bash
-inlier play \
-    --run-dir results/generic_dataset/dbcamp-db-qcamp-q_vs0.5_cs1_nh10_nr20_na60_ns7 \
-    --cache-dir cache_inlier
-```
-
-<p align=center>
-  <img src="../figures/campus.gif" alt="InLiER loop-closure playback on the campus dataset" width="90%"/>
-</p>
-
-Everything it needs — the two dataset paths, `--n-db` / `--stride-db` and their query counterparts, the DB→Q transform, and the tag the filenames use — is read back out of the `results_*.json`. That is deliberate: retyping the submap accumulation would let a replay window the sequence differently from the run it is replaying. The only thing you may need to add is `--dataset`, if the folders have moved since the run.
-
-Replaying a generic run re-reads and re-accumulates every submap from the `.pcd` files (the descriptor cache spares the encoding, not the disk), so expect the load to take a while on a long sequence.

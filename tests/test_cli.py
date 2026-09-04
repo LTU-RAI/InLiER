@@ -706,6 +706,24 @@ def test_run_builds_helipr_sources_in_both_modes(monkeypatch, cross, given):
                          ("/data/HeLiPR", "Roundabout01", "Ouster")]
 
 
+def test_run_refuses_cross_session_kitti(capsys, tmp_path):
+    """Two KITTI sequences have two unrelated origins.
+
+    Each sequence's poses are `inv(Tr) @ P_i @ Tr` -- scan i in the velodyne
+    frame of *that sequence's* frame 0. Retrieval would still work, since no
+    stage reads a pose, which is what makes this worth refusing rather than
+    documenting: the odometry columns would compare positions in different
+    frames and look like ordinary numbers.
+    """
+    code, out = _run(capsys, "run", "--dataset-type", "kitti",
+                     "--dataset", str(tmp_path),
+                     "--db-sequence", "00", "--q-sequence", "05",
+                     "--threshold", "0.3")
+    assert code == 1
+    assert "no cross-session mode" in out.err
+    assert "--sequence" in out.err          # says what to do instead
+
+
 def test_run_refuses_a_mix_of_the_two_modes(capsys, tmp_path):
     code, out = _run(capsys, "run", "--dataset-type", "generic",
                      "--dataset", str(tmp_path), "--sequence", "a",

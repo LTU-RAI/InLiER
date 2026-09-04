@@ -152,41 +152,26 @@ carries the scores. Pointing `-o` at an image is an error naming `--viz-save`,
 rather than JSON quietly written under a `.png` name.
 
 ```text
-  stage 1  MINT   0.701493
-  stage 2  BEAM   0.200000   (azimuth shift 56)
-  verify          0.313433   (42/134 keypoint inliers, 21/44 RANSAC)
+  stage 1  MINT   0.660061   (L1-normalised histogram intersection (compact))
+  stage 2  BEAM   0.131640   (azimuth shift 0)
+  verify          0.075488   (85/1126 keypoint inliers, 44/186 RANSAC)
 
   VERIFIED
-    yaw +24.919 deg   t = [-1.916, -0.836, +0.034] m   RMSE 0.7391 m
-    GICP on raw clouds: converged in 3 iters, 21477 inliers, error 3687.2414
+    yaw +0.041 deg   t = [-0.475, +0.826, -0.053] m   RMSE 0.6476 m
+    GICP on raw clouds: converged in 9 iters, 86862 inliers, error 56291.9572
 ```
 
-This answers the question you actually ask while tuning — *why did these two
-not match?* — which an evaluation answers only in aggregate, several minutes
-later. The figure puts both descriptor stacks side by side on a **shared
-colour scale**, so a difference in brightness is a difference in the
-descriptors rather than in how each panel autoscaled itself, with the two
-top-down views and a third panel showing the query transformed onto the
-database by the estimated pose.
+`--viz` draws those same numbers with the geometry and the descriptors behind
+them, both scans side by side:
 
-**Pairs only, by design.** No directories, no globs, no all-vs-all. Those
-belong to `inlier eval`, which has the database, the ground truth and the
-metrics to make such numbers mean something; here there is one pair and no
-ground truth, so every number is a diagnostic rather than a result.
+<p align=center>
+  <img src="../figures/cmp.png" alt="inlier match --viz figure for a heterogeneous pair" width="80%"/>
+</p>
 
-Two things worth knowing:
-
-- **The stages run with their score thresholds relaxed** (`mode="eval"`). With
-  a single candidate, a threshold would replace the number you asked for with
-  an empty result — being told "stage 2 scored 0.11" is the point.
-- **The point cloud is not in the `.npz`** — tokens and keypoints are — so the
-  geometry panels reload it from the provenance the encoding carries (the
-  dataset and submap index, or the source scan). If the dataset has moved, the
-  keypoints are drawn alone and the figure says so. `--no-clouds` skips the
-  reload deliberately, which also makes GICP refine on the keypoints.
-
-A scan matched against itself is the sanity check: MINT and BEAM both `1.0`,
-azimuth shift `0`, and an identity transform.
+<p align=center><sub>Top row: each scan with its keypoints, then the query
+transformed onto the database by the verified pose. Below it the same three
+matrices for both sides -- <code>H</code>, <code>R</code>, <code>A</code> -- and
+the stage scores with what each one measured.</sub></p>
 
 ## Building the Ground Truth
 
@@ -272,14 +257,6 @@ is an error — `--no-strict-gt-check` downgrades it to a warning. The encoder
 and retrieval parameters come from `--config`; see
 [Configuration](configuration.md).
 
-> 💡 **This is also the global-localization protocol.** A fixed prior map is a
-> database that does not change while the queries run, so every query sees all
-> of it — which is what cross-session already does. Pass `--threshold` with a
-> value chosen on a *different* sequence and you are evaluating online
-> localization against a prior map, with no operating point picked from the run
-> being scored. There is no separate `online-global` command, and
-> [the roadmap](roadmap.md#online-global--already-here) says why.
-
 ### Online loop closure detection
 
 `inlier eval online-lcd` is the SLAM protocol: one session, no second sequence
@@ -294,12 +271,14 @@ inlier eval online-lcd --dataset /data/HeLiPR \
 
 | group | flags |
 |---|---|
-| loader | `--dataset-type {helipr,generic}` (default: `helipr`) |
-| path | `--dataset` — the HeLiPR root, or the sequence directory under `--dataset-type generic` |
+| loader | `--dataset-type {helipr,kitti,generic}` (default: `helipr`) |
+| path | `--dataset` — the HeLiPR root, or the KITTI root, or the sequence directory under `--dataset-type generic` |
 | helipr | `--sequence`, `--sensor` |
-| generic | `--n-scans`, `--stride` |
+| kitti | `--sequence` (e.g. `00`; droppable when `--dataset` is itself a sequence directory), `--n-scans`, `--stride`. `--scans`/`--poses`/`--sensor` are refused — the layout supplies all three |
+| generic | `--scans DIR`, `--poses FILE` (override `<dataset>/scans` and `<dataset>/poses_*.txt`; both together replace `--dataset`), `--n-scans`, `--stride` |
 | ground truth | `--exclusion` (default: `frames=100`), `--max-pose-dist` (default: 10.0), `--search-radius` (default: 0) |
-| output | as cross-session |
+| output | `-o/--output-dir` (default: `results`), `--cache-dir` (default: `cache_inlier`, `''` disables), `--threshold-policy {max_precision,max_f1,fixed}` (default: `max_precision`), `--threshold` (implies `fixed`) |
+| common | `-c/--config`, `--set KEY=VALUE`, `--backend {auto,cpp,python}`, `-q/--quiet` — as everywhere |
 
 `--exclusion` carries its unit — `frames=N`, `seconds=S` or `metres=M` — because
 the three are not interchangeable: 100 frames is a different window at 1 Hz
@@ -309,33 +288,14 @@ bound is applied inside the scoring loop rather than by discarding results
 afterwards, which is what stops an excluded neighbour from crowding a real
 loop closure out of the top-k.
 
+`seconds=` is the one unit that costs extra: the descriptor cache stores poses
+but not timestamps, so that window alone re-reads the sequence.
+
 Ground truth is pose distance alone, since there is no overlap matrix for a
 single session. Results are reported the way loop closure is scored — `f1_max`
 and max recall at 100% precision, in a `loop_closure` block — alongside a
 `latency` block whose per-frame timings cover the query *and* the insertion,
 and are meaningful because the database really does grow one frame at a time.
-
-#### Which frames the loop-closure numbers score
-
-The `loop_closure` block is swept over **every** frame, and says so:
-`"population": "all_queries"`. That matters more than it sounds. The
-cross-session PR curve — and the `pr_auc` in each stage block here — scores only
-queries that have a ground-truth positive, which is nearly all of them when two
-sessions overlap. In a single session most frames close no loop at all, so
-scoring only the ones that do makes the failure this protocol exists to measure
-— firing where there is nothing to close — literally uncountable: no frame is
-ever a false negative at threshold 0, recall pins to 1.0, and `f1_max` lands on
-the degenerate accept-everything point. Counting every frame puts those false
-fires back in the denominator, so both `f1_max` and
-`max_recall_at_full_precision` mean what a SLAM reader expects.
-
-The stage `pr_auc` values keep the narrower retrieval population on purpose:
-they answer "when a loop *does* exist, is it ranked first", which is the
-place-recognition question and is what makes them comparable to published
-retrieval numbers. Two populations, both labelled, neither silently mixed.
-
-`seconds=` is the one unit that costs extra: the descriptor cache stores poses
-but not timestamps, so that window alone re-reads the sequence.
 
 With `--dataset-type generic`, `--scans DIR` and `--poses FILE` name the two
 paths directly when the data is not laid out as `<dataset>/scans` beside
@@ -347,7 +307,7 @@ Use it rather than `generic` for KITTI: its ground-truth poses are in the camera
 frame and need the calibration applied, which the generic loader cannot know
 about. See [KITTI Odometry](custom-data.md#kitti-odometry).
 
-#### `--search-radius`
+### Search radius
 
 A SLAM front-end usually matches against a local map rather than every frame it
 has ever seen. `--search-radius R` reproduces that: candidates are restricted to
@@ -371,226 +331,6 @@ matcher's bound cannot express it. That is still *exact*, because the stage
 scores the entire causal set before anything is dropped; what it does mean is
 that the reported `latency` over-states a radius run, since the search itself
 still scans every causal frame.
-
-## Producing Loop Closures
-
-`inlier eval` answers "how good is this?", which needs labels. A deployment has
-none — it has scans, a drifting odometry estimate, and one question: which
-frames close a loop, and what is the constraint between them. `inlier run` is
-that command.
-
-```bash
-# single session: streams causally against its own past
-inlier run --dataset-type kitti --dataset /data/kitti --sequence 00 \
-    --n-scans 10 --exclusion seconds=30 --threshold 0.35 -o results/run
-
-# cross session: queries a fixed prior map
-inlier run --dataset-type helipr --dataset /data/HeLiPR \
-    --db-sequence Roundabout01 --q-sequence Roundabout03 --pair O-Aeva \
-    --threshold 0.35 -o results/run
-```
-
-The mode is **inferred**, not declared: naming a prior map with any `--db-*` or
-`--q-*` flag selects cross-session, otherwise it streams one session. Mixing
-the two vocabularies is an error naming both. Inference beats a `--mode` flag
-because a typo like `--db-pth` is an unrecognised argument and aborts, where a
-mistyped mode value would quietly select the wrong one.
-
-### `--threshold` is required
-
-There is no ground truth to sweep, so there is nothing to select an operating
-point *from*, and `--threshold-policy` does not exist here. Pick a threshold
-with `inlier eval` on a labelled sequence — its max-recall-at-100%-precision
-value is the usual choice — and fix it here. A default would be someone else's
-operating point silently applied to your robot.
-
-### The poses are odometry
-
-They accumulate submaps, they may bound the search, and they fill two
-diagnostic columns. **They never accept or reject a closure** — that is the
-verification score against the threshold, and nothing else. The record says
-`pose_source: "odometry"` and `ground_truth: null` so the file cannot be
-mistaken for an evaluation.
-
-> ⚠️ **`--search-radius` here is not the oracle it is in `inlier eval`.** In
-> [online-lcd](#--search-radius) the radius is measured against the
-> *ground-truth* pose, which a deployed system does not have, so it inflates
-> every metric. Here it is measured against the same drifted odometry the
-> running system already has, which is what a SLAM front-end actually does —
-> a scope choice, not a cheat. Same flag, opposite status, and
-> `candidate_filter.pose_source` in the results records which one ran.
-
-### What it writes
-
-| file | what |
-|---|---|
-| `closures_<tag>.csv` | the product: one row per accepted closure, with its 6-DoF constraint and match quality |
-| `scores_<tag>.npz` | the raw per-stage score matrices — **no decisions applied** |
-| `scores_<tag>.png` | those matrices drawn, one panel per stage |
-| `scores_<tag>.csv` | the same, readable: top-`--top-k` candidates per query, all stages joined |
-| `per_pair_verify_<tag>.csv` | the *unrefined* verify pose, so GICP cannot erase it |
-| `ranked_<tag>.csv` | stage-1 ranking |
-| `trajectory_<tag>.png` | the closures drawn, in one neutral colour |
-| `run_<tag>.json` | provenance, config, timing — and no metrics |
-
-**`closures_*.csv`** carries every candidate that verified above the threshold,
-not just the best per query: a back-end can weigh or discard them, and dropping
-them here destroys information it cannot recover. Filter on `rank == 0` if you
-only want the best. `q_scan_idx`/`q_stamp` exist because `query_idx` is a
-*submap* index that depends on `--n-scans`/`--stride` — without them a back-end
-keying on keyframes or time cannot map a row back to anything.
-
-The pose is `p_db = T @ p_query` in the sensor frame, GICP-refined where
-`refined=1`. `gicp_*` columns are blank when GICP never ran, and carry real
-values when it ran and failed — a `0` would read as "converged in 0 iterations
-with 0 error". `odom_xy_distance_m` and `odom_disagreement_m/deg` are
-diagnostics: a large distance means large accumulated drift, **not** a wrong
-closure — a correct closure across heavy drift is precisely the far-apart one.
-
-**`scores_*.npz`** holds the score matrices as the stages produced them. No
-threshold is applied and no acceptance is recorded; which closures were
-accepted lives in `closures_*.csv` and nowhere else. Two things follow:
-
-- **Not-scored is `NaN`, never `0.0`.** The stages are a funnel — MINT scores
-  the causal database, BEAM only MINT's shortlist, verify only the top-`topv` —
-  and `0.0` is a real score a stage returns (a failed verification scores
-  exactly that). Collapsing the two would claim the matcher looked at pairs it
-  never saw.
-- **Single-session matrices are lower-triangular**: a frame may only match its
-  own past, so the diagonal, everything above it, and everything inside the
-  exclusion window are `NaN`.
-
-They grow with the square of the frame count — a few hundred submaps is under a
-megabyte, a 4541-frame session at `--n-scans 1` is ~250 MB across the stages —
-so the command warns before writing a large one, and `--no-score-matrices`
-skips them (and the figure with them).
-
-**`scores_*.png`** draws the same arrays, one panel per stage, which is where
-the funnel becomes obvious: on a 405-submap campus session MINT scored 72,665
-pairs, BEAM 14,527 and verify 7,511, out of 164,025. Pale cells are the ones
-that stage never scored — they are *not* at the bottom of the colour ramp,
-because `0.0` is a real score and 2,850 of verify's cells genuinely hold it.
-The single-session panels are visibly lower-triangular, which is causality
-showing up in the picture.
-
-Colour scales are **per panel**, not shared. The stages do not measure the same
-quantity — MINT is an L1 histogram intersection, BEAM a bit-level Jaccard,
-verify a keypoint inlier ratio — so one ramp across all three would assert a
-comparability that does not exist, and would flatten the later panels into
-solid dark. Each colourbar names its own metric and its own maximum.
-
-Three things about these panels surprise people:
-
-**The upper triangle is empty in single-session mode**, and it is not being
-hidden — it was never computed. A streaming run lets frame *t* match only
-frames older than the exclusion window, so nothing at or above the diagonal is
-ever scored. It is *not* filled in by mirroring the lower half, because the
-matrix is not symmetric: verify's score is `n_keypoint_inliers /
-n_total_query_keypoints`, whose denominator depends on which scan is the query,
-and MINT's `min_shared_rows` gate tests the *query's* occupied height rows.
-Reflecting would invent values the matcher would not produce in that direction.
-Cross-session mode has no diagonal to speak of and fills the whole rectangle.
-
-**Whole rows are blank at the top.** Those are the frames inside the opening
-exclusion window — they have no past to query yet, so every stage is blank for
-them. With `--exclusion seconds=120` on the campus session that is the first 18
-frames, identically in all three panels.
-
-**BEAM and verify are missing whole database frames.** That is the funnel, not
-a bug: `stage1.topk_pct` decides how many of MINT's candidates reach BEAM (40
-per query here) and `verify.topv` how many reach verification (20). A database
-frame MINT never ranked that highly for *any* query never appears again — 60 of
-405 frames for BEAM, 81 for verify in that run. Raise `stage1.topk_pct` or
-`verify.topv` to widen it.
-
-The cut between stages is **by rank, never by score.** `stage1` has no
-`score_threshold` at all — nothing in the config sets a similarity a candidate
-must clear to be reranked — so the top-1 candidate always reaches BEAM whenever
-the query has any candidate at all, however weak. In that campus run the
-weakest candidate to reach BEAM scored `0.333` while the lowest MINT score
-anywhere was `0.206`: the difference is rank, not merit.
-
-`stage1.min_shared_rows` is not an exception. It does not stop a candidate
-reaching BEAM — it makes MINT *score it* `0.0`, and a zero-scored candidate
-still rides through on rank when nothing better exists. The same is true of
-`stage2.score_threshold`, which zeroes rather than removes.
-
-Very large matrices are **block-reduced by maximum** before rasterising, above
-16M cells (a 4000-frame session still draws every pair). Max, not
-stride-sampling: these matrices are sparse — verify holds about `topv` scored
-cells per row — so keeping every *n*th row and column would discard most of the
-signal at random and show a thinner funnel than the run produced. Max, not
-mean, because a mean would blend scored cells with unscored ones and turn `NaN`
-into a number. A reduced panel says so in its title.
-
-### Watching it run — `--live`
-
-By default the run works stage by stage: encode the whole session, shortlist
-everything, then rerank, verify and refine. `--live` reorders it into the loop
-a deployed system actually runs — one frame at a time, accumulate, encode,
-match, refine, draw — in a 3D viewer that opens **paused**:
-
-```bash
-pip install -e ".[viz]"          # pyridescence; not part of [eval]
-
-inlier run --dataset-type kitti --dataset /data/kitti --sequence 00 \
-    --n-scans 10 --exclusion seconds=30 --threshold 0.35 \
-    -o results/run --live
-```
-
-The closures are the **same closures**. Every stage in the pipeline is already
-a per-query loop with no state carried between queries — the one exception,
-the growing single-session database, is causal by construction — so processing
-frame by frame is the same arithmetic in a different loop order, not an
-approximation of it. Both drivers call the same per-query functions, and the
-test suite runs a sequence through each and compares `closures_*.csv`,
-`per_pair_verify_*.csv` and every matrix in `scores_*.npz` cell by cell.
-
-What differs is the cost: the query session is encoded **for real** rather than
-read back out of the descriptor cache, because an encoder that skipped its work
-would not be showing you a run. A prior map — cross-session, or a global
-database — is still built up front from the cache, since a deployment starts
-with its map already loaded. Nothing else changes; the same artifacts land in
-`-o` when the window closes.
-
-The window draws the map as it is built (deposited once per frame and never
-re-uploaded, so frame time does not grow with the session), the current submap
-in grey by height, its keypoints on top in colour, the pose triad, the
-trajectory with its keyframe nodes left visible, and a green edge between the
-two nodes of every closure as it is found. Alongside are the query's three
-descriptor stages — H, the full token histogram; R, the MINT row; A, the BEAM
-elevation codes — drawn with the colour maps and scales
-[`inlier encode --viz`](#inspecting-a-descriptor) uses for the same arrays, so
-the two pictures agree. Beside them, a panel with the frame counter, closure
-count, best score against the threshold, and this frame's milliseconds per
-stage.
-
-Controls are buttons, not keys: play/pause, single-step, an fps cap (0 for
-free-run), and checkboxes for the scan, keypoints, map and camera follow.
-Turning the map off clears what is already drawn.
-
-`--live` needs a display. `inlier doctor` reports `pyridescence` as a warning
-rather than a failure when it is missing, since every other command runs
-without it.
-
-### Two things it does not do
-
-`inlier run` uses **deploy-mode** config, where the stage score thresholds you
-configured are honoured; `inlier eval` forces them to `-2.0` so a PR sweep sees
-every candidate. `config_mode` in the results records which ran.
-
-With the **shipped config this makes no difference**: `stage2.score_threshold`
-and `rerank.score_threshold` default to `0.0`, and both stages produce
-non-negative scores, so `>= 0.0` and `>= -2.0` are equally always true. The two
-commands agree on the same data. They diverge only if you set a *positive*
-threshold — and note that even then it is applied as a *zeroing*, not a filter:
-a candidate below it keeps its place in the ranking with a score of `0.0` and
-can still reach verification.
-
-`inlier play` cannot replay a run: it needs the TP/FP labels a
-`candidates_*.csv` carries, and a run has no way to produce them honestly.
-`--live` is not a substitute for it either — it watches a run *happen*, once,
-with no labels to colour anything by; `play` scrubs a finished evaluation.
 
 ## Replaying a Run
 
@@ -660,6 +400,127 @@ different meanings instead:
   around — the same reading as the static `trajectory_*.png`. The index is
   scaled into the plot's z range, so only the ordering and the proportions
   are meaningful; the axis itself is not drawn.
+
+## Producing Loop Closures
+
+`inlier eval` answers "how good is this?", which needs labels. A deployment has
+none — it has scans, a drifting odometry estimate, and one question: which
+frames close a loop, and what is the constraint between them. `inlier run` is
+that command.
+
+```bash
+# single session: streams causally against its own past
+inlier run --dataset-type kitti --dataset /data/kitti --sequence 00 \
+    --n-scans 10 --exclusion seconds=30 --threshold 0.35 -o results/run
+
+inlier run --dataset-type helipr --dataset /data/HeLiPR \
+    --sequence Roundabout03 --sensor Ouster \
+    --exclusion seconds=30 --threshold 0.35 -o results/run
+
+inlier run --dataset-type generic --dataset /data/campus \
+    --n-scans 40 --exclusion metres=50 --threshold 0.35 -o results/run
+
+# ...or name the two paths, when the data is laid out some other way
+inlier run --dataset-type generic \
+    --scans /data/campus/clouds --poses /data/campus/traj_tum.txt \
+    --n-scans 40 --exclusion metres=50 --threshold 0.35 -o results/run
+
+# cross session: queries a fixed prior map
+inlier run --dataset-type helipr --dataset /data/HeLiPR \
+    --db-sequence Roundabout01 --q-sequence Roundabout03 --pair O-Aeva \
+    --threshold 0.35 -o results/run
+
+inlier run --dataset-type generic \
+    --db-path /data/campus/db --q-path /data/campus/q --n-db 40 --n-q 40 \
+    --threshold 0.35 -o results/run
+```
+
+| group | flags |
+|---|---|
+| loader | `--dataset-type {helipr,kitti,generic}` (default: `helipr`) — `kitti` is single-session only |
+| path | `--dataset` — the HeLiPR root, the KITTI odometry root or one sequence directory, or the generic sequence directory |
+| single, helipr | `--sequence`, `--sensor` |
+| single, kitti | `--sequence` (e.g. `00`), `--n-scans`, `--stride` |
+| single, generic | `--scans DIR`, `--poses FILE`, `--n-scans`, `--stride` |
+| single, all | `--exclusion` (default: `frames=100`) — how much recent past a frame may not match |
+| cross, helipr | `--db-sequence`, `--q-sequence`, `--pair` (e.g. `O-Aeva`) |
+| cross, generic | `--db-path`, `--q-path`, `--db-scans`, `--db-poses`, `--q-scans`, `--q-poses`, `--transform`, `--no-transform` |
+| cross, all | `--n-db`, `--n-q`, `--stride-db`, `--stride-q` — submap accumulation per session, ignored by HeLiPR |
+| scope | `--search-radius` (default: 0 — search everything), measured on **odometry**, not ground truth |
+| output | `--threshold` (**required**), `-o/--output-dir`, `--cache-dir`, `--top-k` (default: 20), `--no-score-matrices`, `--live` |
+
+The path flags behave as they do for
+[online-lcd](#online-loop-closure-detection): `--scans`/`--poses` override the
+conventional `<dataset>/scans` and `<dataset>/poses_*.txt` and may replace
+`--dataset` when both are given, `--n-scans`/`--stride` are ignored by HeLiPR,
+and `--dataset-type kitti` refuses `--scans`, `--poses` and `--sensor` because
+the KITTI layout supplies all three. Cross-session, the same flags carry a
+`--db-`/`--q-` prefix, one per session.
+
+`--transform` maps the prior map's world frame into the query's, defaulting to
+`<db-path>/transform.txt` when that file exists; `--no-transform` says the two
+sessions already share a frame. Both are read on the generic path only, and the
+two other loaders differ in why:
+
+### `--threshold` is required
+
+There is no ground truth to sweep, so there is nothing to select an operating
+point *from*, and `--threshold-policy` does not exist here. Pick a threshold
+with `inlier eval` on a labelled sequence — its max-recall-at-100%-precision
+value is the usual choice — and fix it here. A default would be someone else's
+operating point silently applied to your robot.
+
+### The poses are odometry
+
+They accumulate submaps, they may bound the search, and they fill two
+diagnostic columns. **They never accept or reject a closure** — that is the
+verification score against the threshold, and nothing else. The record says
+`pose_source: "odometry"` and `ground_truth: null` so the file cannot be
+mistaken for an evaluation.
+
+> ⚠️ **`--search-radius` here is not the oracle it is in `inlier eval`.** In
+> [online-lcd](#--search-radius) the radius is measured against the
+> *ground-truth* pose, which a deployed system does not have, so it inflates
+> every metric. Here it is measured against the same drifted odometry the
+> running system already has, which is what a SLAM front-end actually does —
+> a scope choice, not a cheat. Same flag, opposite status, and
+> `candidate_filter.pose_source` in the results records which one ran.
+
+### What it writes
+
+| file | what |
+|---|---|
+| `closures_<tag>.csv` | the product: one row per accepted closure, with its 6-DoF constraint and match quality |
+| `scores_<tag>.npz` | the raw per-stage score matrices — **no decisions applied** |
+| `scores_<tag>.png` | those matrices drawn, one panel per stage |
+| `scores_<tag>.csv` | the same, readable: top-`--top-k` candidates per query, all stages joined |
+| `per_pair_verify_<tag>.csv` | the *unrefined* verify pose, so GICP cannot erase it |
+| `ranked_<tag>.csv` | stage-1 ranking |
+| `trajectory_<tag>.png` | the closures drawn, in one neutral colour |
+| `run_<tag>.json` | provenance, config, timing — and no metrics |
+
+### Watching it run — `--live`
+
+By default the run works stage by stage: encode the whole session, shortlist
+everything, then rerank, verify and refine. `--live` reorders it into the loop
+a deployed system actually runs — one frame at a time, accumulate, encode,
+match, refine, draw — in a 3D viewer that opens **paused**:
+
+```bash
+pip install -e ".[viz]"          # pyridescence; not part of [eval]
+
+inlier run --dataset-type kitti --dataset /data/kitti --sequence 00 \
+    --n-scans 10 --exclusion seconds=30 --threshold 0.35 \
+    -o results/run --live
+```
+
+Controls are buttons, not keys: play/pause, single-step, an fps cap (0 for
+free-run), and checkboxes for the scan, keypoints, map and camera follow.
+Turning the map off clears what is already drawn.
+
+`--live` needs a display. `inlier doctor` reports `pyridescence` as a warning
+rather than a failure when it is missing, since every other command runs
+without it.
 
 ## Benchmarking the Backends
 
