@@ -73,6 +73,11 @@ class DeploySpec:
     score_matrices: bool = True
     verbose: bool = True
     tag: str = "run"
+    #: Run the pipeline frame by frame instead of stage by stage, and open a
+    #: viewer on it.  Same closures either way -- see :mod:`inlier.eval.stream`
+    #: -- but the query session is encoded for real rather than read back out
+    #: of the descriptor cache, which is the whole point of watching it.
+    live: bool = False
 
     @property
     def cross_session(self) -> bool:
@@ -333,32 +338,72 @@ def write_score_matrices(path: Path, matrices: Dict[str, np.ndarray],
 # ---------------------------------------------------------------------------
 #  The run
 # ---------------------------------------------------------------------------
+@dataclass
+class StageResults:
+    """What the pipeline produced, before anything is written down.
 
-def run(spec: DeploySpec) -> RunResult:
-    from inlier import InLiER
+    The seam between the two drivers.  :func:`_run_batch` fills it stage by
+    stage and :func:`inlier.eval.stream.run_stream` fills it frame by frame;
+    everything after -- the CSVs, the JSON, the figures -- reads this and
+    cannot tell which one ran.
+    """
+
+    q_enc: Any
+    db_enc: Any
+    q_stamps: List[float]
+    db_stamps: List[float]
+    bounds: List[int]
+    cand_filter: Any
+    ranked_s1: Dict[int, List[int]]
+    sims_s1: Dict[int, Dict[int, float]]
+    ranked_s2: Optional[Dict[int, List[int]]]
+    sims_s2: Optional[Dict[int, Dict[int, float]]]
+    shifts_s2: Optional[Dict[int, Dict[int, int]]]
+    ranked_rr: Optional[Dict[int, List[int]]]
+    sims_rr: Optional[Dict[int, Dict[int, float]]]
+    shifts_rr: Optional[Dict[int, Dict[int, int]]]
+    sims_ver: Dict[int, Dict[int, float]]
+    ver_rank: Dict[int, List[int]]
+    verify_outputs: Dict[Tuple[int, int], Any]
+    accepted: List[Tuple[int, int, float, int]]
+    gicp_outputs: Dict[Tuple[int, int], Any]
+    n_converged: int
+    latency_ms: np.ndarray
+    effective_topk: int
+    encode_time: float = 0.0
+    t_s1: float = 0.0
+    t_s2: float = 0.0
+    t_rr: float = 0.0
+    t_verify: float = 0.0
+    t_gicp: float = 0.0
+
+
+def _live_viewer(spec: DeploySpec):
+    """The viewer a live run reports to, or the stub when there is no display.
+
+    A missing ``pyridescence`` is an error, not a silent downgrade: ``--live``
+    was asked for explicitly, and quietly running without a window would look
+    like the flag did nothing.
+    """
+    from inlier.viz.live import LiveViewer
+
+    return LiveViewer(spec.threshold, title=f"inlier run -- {spec.tag}")
+
+
+def _run_batch(spec: DeploySpec, encoder, sequence, loaded) -> "StageResults":
+    """The pipeline stage by stage: encode all, retrieve all, verify all.
+
+    The default, and the fast one -- it reads the query session straight out of
+    the descriptor cache when one matches, which a live run deliberately does
+    not.
+    """
     from inlier.eval.pipeline import (beam_stage, build_matcher,
                                       online_shortlist_stage, rerank_stage,
                                       shortlist_stage, verify_stage)
     from inlier.eval.refine import refine_pairs
 
-    validate(spec)
-
     r = spec.resolved
-    output_dir = Path(spec.output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    encoder = InLiER(r.inlier)
     n_steps = 5 if spec.cross_session else 6
-
-    # One loader for the whole run.  The exclusion may want timestamps and
-    # GICP may want raw clouds; loading the sequence once for both beats
-    # cross_session's separate thunks, which read it twice.
-    loaded: Dict[str, Any] = {}
-
-    def sequence(which: str):
-        if which not in loaded:
-            src = spec.db_source if which == "db" else spec.source
-            loaded[which] = src.load()
-        return loaded[which]
 
     # --- encode ------------------------------------------------------------
     _log(spec, f"\n[1/{n_steps}] Encoding ...")
@@ -487,14 +532,81 @@ def run(spec: DeploySpec) -> RunResult:
                                     else sequence("q")).point_clouds,
             verbose=spec.verbose)
 
+    return StageResults(
+        q_enc=q_enc, db_enc=db_enc,
+        q_stamps=_stamps(loaded.get("q"), n_q),
+        db_stamps=(_stamps(loaded.get("db"), n_db)
+                   if spec.cross_session else _stamps(loaded.get("q"), n_q)),
+        bounds=bounds, cand_filter=cand_filter,
+        ranked_s1=ranked_s1, sims_s1=sims_s1,
+        ranked_s2=ranked_s2, sims_s2=sims_s2, shifts_s2=shifts_s2,
+        ranked_rr=ranked_rr, sims_rr=sims_rr, shifts_rr=shifts_rr,
+        sims_ver=sims_ver, ver_rank=ver_rank, verify_outputs=verify_outputs,
+        accepted=accepted, gicp_outputs=gicp_outputs, n_converged=n_converged,
+        latency_ms=latency_ms, effective_topk=effective_topk,
+        encode_time=encode_time, t_s1=t_s1, t_s2=t_s2, t_rr=t_rr,
+        t_verify=t_verify, t_gicp=t_gicp)
+
+
+def run(spec: DeploySpec) -> RunResult:
+    from inlier import InLiER
+
+    validate(spec)
+
+    r = spec.resolved
+    output_dir = Path(spec.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    encoder = InLiER(r.inlier)
+
+    # One loader for the whole run.  The exclusion may want timestamps and
+    # GICP may want raw clouds; loading the sequence once for both beats
+    # cross_session's separate thunks, which read it twice.
+    loaded: Dict[str, Any] = {}
+
+    def sequence(which: str):
+        if which not in loaded:
+            src = spec.db_source if which == "db" else spec.source
+            loaded[which] = src.load()
+        return loaded[which]
+
+    if spec.live:
+        from inlier.eval import stream
+        from inlier.eval.datasets import stream as dstream
+
+        viewer = _live_viewer(spec)
+        res = stream.run_stream(spec, encoder, viewer)
+        # Only on the way out, and only on success: `finish` holds the window
+        # open until it is closed, which is the last thing a failing run should
+        # do before it reports why.
+        viewer.finish()
+        n_seen = len(res.q_enc.tokens)
+        if n_seen < dstream.frame_count(spec.source):
+            _log(spec, f"\n  window closed after {n_seen} frame(s); the "
+                       f"artifacts below cover those and no more")
+    else:
+        res = _run_batch(spec, encoder, sequence, loaded)
+
+    q_enc, db_enc = res.q_enc, res.db_enc
+    n_q, n_db = len(q_enc.tokens), len(db_enc.tokens)
+    bounds, cand_filter = res.bounds, res.cand_filter
+    ranked_s1, sims_s1 = res.ranked_s1, res.sims_s1
+    sims_s2, shifts_s2 = res.sims_s2, res.shifts_s2
+    sims_rr = res.sims_rr
+    sims_ver, verify_outputs = res.sims_ver, res.verify_outputs
+    accepted, gicp_outputs = res.accepted, res.gicp_outputs
+    n_converged, latency_ms = res.n_converged, res.latency_ms
+    effective_topk = res.effective_topk
+    encode_time, t_s1, t_s2 = res.encode_time, res.t_s1, res.t_s2
+    t_rr, t_verify, t_gicp = res.t_rr, res.t_verify, res.t_gicp
+    best_seen = max((s for per in sims_ver.values() for s in per.values()),
+                    default=0.0)
+
     # --- artifacts ---------------------------------------------------------
     stage = ("Verify" if sims_ver else "Rerank" if sims_rr
              else "Stage-2" if sims_s2 else "Stage-1")
     q_stride = int(getattr(spec.source, "stride", 1) or 1)
     db_stride = int(getattr(spec.db_source or spec.source, "stride", 1) or 1)
-    q_stamps = _stamps(loaded.get("q"), n_q)
-    db_stamps = (_stamps(loaded.get("db"), n_db) if spec.cross_session
-                 else q_stamps)
+    q_stamps, db_stamps = res.q_stamps, res.db_stamps
     # In cross-session mode the two sessions sit in unrelated world frames
     # unless a transform was applied, so an odometry distance between them is
     # not a number -- better absent than meaningless.
@@ -553,38 +665,56 @@ def run(spec: DeploySpec) -> RunResult:
                      artifacts=written)
 
 
-def _stamps(seq, n: int) -> List[float]:
-    """Timestamps if the loaded sequence carried real ones, else ``[]``.
+def usable_stamps(stamps: Optional[Sequence[float]], n: int) -> List[float]:
+    """The timestamps if they are real ones, else ``[]``.
 
     Loaders that have none pad with zeros (``Sequence.__post_init__``), and a
-    column of zeros looks like data.  All-zero is therefore treated as absent.
+    column of zeros looks like data.  All-zero is therefore treated as absent,
+    so a run without timestamps writes empty cells rather than a convincing
+    column of ``0.0``.
+
+    Shared with the streaming driver, which collects the same stamps a frame at
+    a time and has to reach the same verdict about them.
     """
-    if seq is None:
-        return []
-    stamps = list(getattr(seq, "pose_timestamps", []) or [])
+    stamps = list(stamps or [])
     if len(stamps) != n or not any(stamps):
         return []
     return stamps
+
+
+def _stamps(seq, n: int) -> List[float]:
+    """:func:`usable_stamps` for a loaded sequence."""
+    return usable_stamps(getattr(seq, "pose_timestamps", None) if seq else None, n)
+
+
+def validate_seconds_axis(stamps: Sequence[float], n_frames: int) -> np.ndarray:
+    """The timestamp axis an ``--exclusion seconds=`` window needs, checked.
+
+    Shared with the streaming driver, which has to make the same two refusals
+    before it starts rather than after: a run that dies on frame 3000 because
+    its timestamps never advanced has wasted an hour saying so.
+    """
+    stamps = list(stamps or [])
+    if len(stamps) != n_frames:
+        raise ValueError(
+            f"--exclusion seconds= needs one timestamp per frame; this "
+            f"sequence reports {len(stamps)} for {n_frames} frames. Use "
+            f"frames= or metres= instead.")
+    axis = np.asarray(stamps, dtype=np.float64)
+    if axis.size and float(axis[-1] - axis[0]) <= 0.0:
+        raise ValueError(
+            f"this sequence carries no usable timestamps (they never advance: "
+            f"first and last are both {axis[0]:g}), so every seconds= cutoff "
+            f"would collapse to 0. Use frames= or metres= instead.")
+    return axis
 
 
 def _exclusion_inputs(spec: DeploySpec, enc, sequence):
     """``(timestamps, arc_length)`` for whichever unit the exclusion uses."""
     unit = spec.exclusion.unit
     if unit == "seconds":
-        stamps = list(sequence("q").pose_timestamps or [])
-        if len(stamps) != len(enc.tokens):
-            raise ValueError(
-                f"--exclusion seconds= needs one timestamp per frame; this "
-                f"sequence reports {len(stamps)} for {len(enc.tokens)} "
-                f"frames. Use frames= or metres= instead.")
-        axis = np.asarray(stamps, dtype=np.float64)
-        if axis.size and float(axis[-1] - axis[0]) <= 0.0:
-            raise ValueError(
-                f"this sequence carries no usable timestamps (they never "
-                f"advance: first and last are both {axis[0]:g}), so every "
-                f"seconds= cutoff would collapse to 0. Use frames= or "
-                f"metres= instead.")
-        return axis, None
+        return validate_seconds_axis(sequence("q").pose_timestamps,
+                                     len(enc.tokens)), None
     if unit == "metres":
         return None, arc_length_of(enc.positions)
     return None, None

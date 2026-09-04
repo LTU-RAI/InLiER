@@ -7,3 +7,6 @@ build/
 .pytest_cache/
 .claude/
 test_results/
+# Dear ImGui window layout, written next to wherever `inlier run --live` was
+# started from. Per-user UI state, not project state.
+imgui.ini

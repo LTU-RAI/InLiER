@@ -29,6 +29,7 @@ FAIL = "FAIL"
 
 CORE_DEPS = ("numpy", "yaml", "small_gicp")
 EVAL_DEPS = ("scipy", "open3d", "tqdm", "matplotlib", "pandas")
+VIZ_DEPS = ("pyridescence",)
 
 
 def register(subparsers, parent) -> None:
@@ -112,6 +113,12 @@ def run(args: argparse.Namespace) -> int:
             _row(OK, module, "")
         else:
             _row(WARN, module, 'evaluation only -- pip install -e ".[eval]"')
+            warnings += 1
+    for module in VIZ_DEPS:
+        if _have(module):
+            _row(OK, module, "")
+        else:
+            _row(WARN, module, '`inlier run --live` only -- pip install -e ".[viz]"')
             warnings += 1
 
     print("\nconfiguration")

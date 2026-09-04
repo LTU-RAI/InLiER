@@ -345,7 +345,7 @@ class Generic_Handler:
         if stride < 1:
             raise ValueError(f"stride must be >= 1, got {stride}")
 
-        from inlier.eval.submaps import submap_windows
+        from inlier.eval.submaps import build_submap, submap_windows
 
         poses, stamps = self.load_poses(dataset_dir)
         scan_files = self.list_scan_files(dataset_dir)
@@ -383,26 +383,11 @@ class Generic_Handler:
             desc=f"  Building submaps (n={n_scans}, stride={stride})")
         for window in iterator:
             s = window[0]
-            ref_pose = poses[s]
-            ref_inv = np.linalg.inv(ref_pose)
-            window_pts: List[np.ndarray] = []
-            for k in window:
-                pts = self.load_scan_file(scan_files[k])
-                if pts.size == 0:
-                    continue
-                if k == s:
-                    window_pts.append(pts.astype(np.float32, copy=False))
-                else:
-                    T_rel = ref_inv @ poses[k]  # keyframe <- scan k
-                    R = T_rel[:3, :3].astype(np.float32)
-                    t = T_rel[:3, 3].astype(np.float32)
-                    pts_local = (pts @ R.T) + t
-                    window_pts.append(pts_local.astype(np.float32, copy=False))
-            if not window_pts:
+            submap = build_submap(self.load_scan_file, scan_files, poses, window)
+            if submap is None:
                 continue
-            submap = np.vstack(window_pts)
             submap_points.append(submap)
-            submap_poses.append(ref_pose)
+            submap_poses.append(poses[s])
             ## keyframe-aligned: a window whose scans were all empty is
             ## skipped above, so appending here keeps all three in step
             submap_stamps.append(stamps[s] if stamps else 0.0)

@@ -126,6 +126,13 @@ def register(subparsers, parent) -> None:
     out.add_argument("--top-k", dest="top_k", type=int, default=20,
                      help="candidates per query in scores_*.csv and "
                           "ranked_*.csv (default: 20)")
+    out.add_argument("--live", action="store_true",
+                     help="watch the run happen: process the session frame by "
+                          "frame in a 3D viewer instead of stage by stage. "
+                          "Same closures either way, but the query session is "
+                          "encoded for real rather than read back out of the "
+                          "descriptor cache, so a re-run costs full encoding. "
+                          "Needs the [viz] extra")
     out.add_argument("--no-score-matrices", dest="score_matrices",
                      action="store_false",
                      help="skip scores_*.npz; it grows with the square of the "
@@ -300,6 +307,9 @@ def run_deploy(args: argparse.Namespace) -> int:
               + (", search radius" if args.search_radius > 0 else "")
               + " and diagnostics, never to accept a closure")
         print(f"  output     : {output_dir}")
+        if args.live:
+            print("  mode       : live -- streaming frame by frame, "
+                  "encoding for real (the cache is not read)")
 
     spec = DeploySpec(
         resolved=resolved, source=q_source, db_source=db_source,
@@ -308,7 +318,7 @@ def run_deploy(args: argparse.Namespace) -> int:
         cache_dir=(Path(args.cache_dir) if args.cache_dir else None),
         config_path=getattr(args, "config", None),
         top_k=args.top_k, score_matrices=args.score_matrices,
-        verbose=not quiet, tag=tag)
+        verbose=not quiet, tag=tag, live=args.live)
 
     result = run(spec)
     if not quiet:

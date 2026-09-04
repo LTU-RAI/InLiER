@@ -176,9 +176,13 @@ def main(argv: Optional[List[str]] = None) -> int:
     except KeyboardInterrupt:
         print("\ninterrupted", file=sys.stderr)
         return 130
-    except (ValueError, FileNotFoundError, NotImplementedError) as exc:
-        # Expected, user-facing failures: a bad config key, a missing dataset.
-        # Anything else keeps its traceback, which is what a bug report needs.
+    except (ValueError, FileNotFoundError, NotImplementedError,
+            ModuleNotFoundError) as exc:
+        # Expected, user-facing failures: a bad config key, a missing dataset,
+        # an optional extra that was never installed.  ModuleNotFoundError and
+        # not ImportError: a module that is absent is the user's to fix, where
+        # one that is present and fails to import is a bug and keeps its
+        # traceback, which is what a bug report needs.
         print(f"inlier: {exc}", file=sys.stderr)
         return 1
 
