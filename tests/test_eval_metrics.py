@@ -212,3 +212,126 @@ def test_max_recall_at_full_precision():
     rec = np.array([0.9, 0.6, 0.2, 0.95])
     assert metrics.max_recall_at_full_precision(prec, rec) == pytest.approx(0.6)
     assert metrics.max_recall_at_full_precision(np.array([0.4]), np.array([0.9])) == 0.0
+
+
+def test_pr_curve_is_quiet_when_a_threshold_makes_no_decision():
+    """0/0 precision must not warn: it is a legitimate end of the sweep.
+
+    Above the highest score no query produces a match, so tp+fp is 0 there.
+    The value is 0.0 either way; this pins that computing it stays silent, so
+    a run whose scores are all low does not spray RuntimeWarnings.
+    """
+    import warnings
+
+    from inlier.eval import metrics
+
+    sims = {0: {5: 0.10}, 1: {7: 0.05}}
+    gt = {0: np.array([5]), 1: np.array([9])}
+    thresholds = np.linspace(0.0, 1.0, 21)      # most are above every score
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        prec, rec, auc = metrics.pr_curve(sims, gt, thresholds)
+
+    assert prec.shape == rec.shape == thresholds.shape
+    assert np.isfinite(prec).all() and np.isfinite(rec).all()
+    ## nothing clears a threshold above 0.10: no decisions, precision 0
+    assert prec[thresholds > 0.10].tolist() == [0.0] * int((thresholds > 0.10).sum())
+
+
+# ---------------------------------------------------------------------------
+#  Detection population (pr_from_counts)
+# ---------------------------------------------------------------------------
+#
+#  ``pr_from_counts`` is the same arithmetic as ``pr_curve``'s tail; the only
+#  thing that differs is which queries were counted before it ran.  The first
+#  test pins that equivalence, the rest pin the difference the population makes.
+
+@pytest.mark.parametrize("seed,sparse,partial", CASES)
+@pytest.mark.parametrize("use_rank_order", [False, True])
+def test_pr_from_counts_reproduces_pr_curve_on_the_narrow_population(
+        seed, sparse, partial, use_rank_order):
+    """Same population in, same curve out -- so any difference is the population."""
+    from inlier.eval.retrieval import RankedResults
+
+    gt, sim, rank, _ = _make_case(seed, sparse, partial)
+    ro = rank if use_rank_order else None
+    ranked = RankedResults.from_similarity_map(sim, gt, N_Q, N_DB, ro, "pr")
+
+    p_new, r_new = metrics.pr_from_counts(ranked.sweep_gt_only(THRESHOLDS))
+    with np.errstate(invalid="ignore"):
+        p_ref, r_ref, _ = metrics.pr_curve(sim, gt, THRESHOLDS, ro)
+    assert np.allclose(p_new, p_ref)
+    assert np.allclose(r_new, r_ref)
+
+
+def _one_true_loop_and_many_false_fires():
+    """One query closes a loop correctly; four with no loop fire anyway.
+
+    The shape of an online session: most frames close nothing, and the cost of
+    a wrong decision falls entirely on those frames.
+    """
+    sim = {0: {10: 0.9}, 1: {11: 0.8}, 2: {12: 0.8}, 3: {13: 0.8}, 4: {14: 0.8}}
+    gt = {0: np.array([10]), 1: np.empty(0, int), 2: np.empty(0, int),
+          3: np.empty(0, int), 4: np.empty(0, int)}
+    return sim, gt
+
+
+def test_detection_curve_counts_queries_that_close_no_loop():
+    """The narrow population calls four false fires a perfect run."""
+    from inlier.eval.retrieval import RankedResults
+
+    sim, gt = _one_true_loop_and_many_false_fires()
+    thr = np.array([0.5, 0.85])
+    ranked = RankedResults.from_similarity_map(sim, gt, 5, 20)
+
+    # Only query 0 has a GT positive, and it is always right, so this curve
+    # cannot see the four frames that fired on nothing.
+    p_narrow, _ = metrics.pr_from_counts(ranked.sweep_gt_only(thr))
+    assert np.allclose(p_narrow, 1.0)
+
+    # Counting every query: at 0.5 the four false fires are FPs (1 of 5 right),
+    # at 0.85 they fall below the threshold and only the true loop survives.
+    p_all, r_all = metrics.pr_from_counts(ranked.sweep(thr))
+    assert p_all[0] == pytest.approx(0.2)
+    assert p_all[1] == pytest.approx(1.0)
+    assert np.allclose(r_all, 1.0)
+
+
+def test_detection_curve_drops_the_degenerate_f1_peak():
+    """F1max stops recommending accept-everything once false fires count."""
+    from inlier.eval.retrieval import RankedResults
+
+    sim, gt = _one_true_loop_and_many_false_fires()
+    thr = np.arange(0.0, 1.001, 0.005)
+    ranked = RankedResults.from_similarity_map(sim, gt, 5, 20)
+
+    p_narrow, r_narrow = metrics.pr_from_counts(ranked.sweep_gt_only(thr))
+    _, at_narrow = metrics.f1_from_curve(p_narrow, r_narrow, thr)
+    assert at_narrow == pytest.approx(0.0)      # the degenerate point
+
+    p_all, r_all = metrics.pr_from_counts(ranked.sweep(thr))
+    f1_all, at_all = metrics.f1_from_curve(p_all, r_all, thr)
+    assert at_all > 0.8                          # above the false fires
+    assert f1_all == pytest.approx(1.0)
+
+    # And the headline number stops being inflated by the same blind spot.
+    assert metrics.max_recall_at_full_precision(p_narrow, r_narrow) == pytest.approx(1.0)
+    assert metrics.max_recall_at_full_precision(p_all, r_all) == pytest.approx(1.0)
+    # ... but only because the true loop outscores them.  Tie the scores and
+    # no threshold separates the two, so full precision is unreachable.
+    sim_tied = {0: {10: 0.8}, 1: {11: 0.8}, 2: {12: 0.8}, 3: {13: 0.8}, 4: {14: 0.8}}
+    tied = RankedResults.from_similarity_map(sim_tied, gt, 5, 20)
+    p_tied, r_tied = metrics.pr_from_counts(tied.sweep(thr))
+    assert metrics.max_recall_at_full_precision(p_tied, r_tied) == 0.0
+
+
+def test_pr_from_counts_is_quiet_and_zero_where_nothing_fires():
+    import warnings
+
+    counts = {"tp": np.array([0, 3]), "fp": np.array([0, 1]), "fn": np.array([0, 0])}
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        p, r = metrics.pr_from_counts(counts)
+    assert (p[0], r[0]) == (0.0, 0.0)
+    assert p[1] == pytest.approx(0.75)

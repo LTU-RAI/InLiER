@@ -2,6 +2,15 @@
 
 Deterministic paths (fixed plane) must match the reference exactly;
 RANSAC-dependent paths are checked statistically.
+
+The reference side is imported from ``inlier.core.reference`` **explicitly**.
+``inlier.core.InLiER.InLiER`` is the shipped wrapper, and when the extension
+is built every one of ``encode``/``extract_keypoints``/``tokenize`` on it is a
+C++ override -- comparing that against ``ip._Encoder`` would compare the core
+against itself and pass no matter what the numpy implementation did. Only
+``_ransac_plane``/``_align_ground``/``_rodrigues``/``_compute_shape_pca`` are
+inherited numpy, which is why the geometry-helper tests below were sound even
+before this was noticed.
 """
 
 from __future__ import annotations
@@ -12,7 +21,7 @@ import pytest
 from inlier import _inlier_pybind as ip
 from inlier.core import _cfg_bridge as bridge
 from inlier.core.Dataclasses import InLiER_Config
-from inlier.core.InLiER import InLiER
+from inlier.core.reference.InLiER import InLiER
 
 
 def make_configs(**overrides):
@@ -113,7 +122,8 @@ def test_all_points_mode_exact(synthetic_cloud):
     ## xy_max/z ROI boundary (no cell aggregation to absorb it), so a
     ## point within ~1 ULP of the boundary can flip inclusion between
     ## languages: AlignGround (Eigen) and _align_ground (numpy) are
-    ## numerically close but not bit-identical (see test_plane.py).
+    ## numerically close but not bit-identical (see
+    ## test_align_ground_matches_reference below).
     ## Tolerate a couple of such boundary flips as multiset noise.
     from collections import Counter
     c_cpp, c_py = Counter(tok_cpp.tolist()), Counter(tok_py.token_id.tolist())

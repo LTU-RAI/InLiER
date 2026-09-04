@@ -21,12 +21,15 @@ import argparse
 import importlib.util
 from pathlib import Path
 
+from inlier.cli._common import add_generic_layout_flags
+
 OK = "ok"
 WARN = "warn"
 FAIL = "FAIL"
 
 CORE_DEPS = ("numpy", "yaml", "small_gicp")
 EVAL_DEPS = ("scipy", "open3d", "tqdm", "matplotlib", "pandas")
+VIZ_DEPS = ("pyridescence",)
 
 
 def register(subparsers, parent) -> None:
@@ -39,8 +42,11 @@ def register(subparsers, parent) -> None:
     p.add_argument("--dataset", type=str, default=None,
                    help="dataset root to check, against --dataset-type's layout")
     p.add_argument("--dataset-type", dest="dataset_type",
-                   choices=("helipr", "generic"), default="helipr",
+                   choices=("helipr", "generic", "kitti"), default="helipr",
                    help="layout to check --dataset against (default: helipr)")
+    p.add_argument("--sequence", type=str, default=None, metavar="XX",
+                   help="KITTI sequence id to check, e.g. 00")
+    add_generic_layout_flags(p)
     p.add_argument("--overlap-dir", dest="overlap_dir",
                    type=str, default="overlap_matrices",
                    help="directory of overlap matrices to check for sidecars")
@@ -108,6 +114,12 @@ def run(args: argparse.Namespace) -> int:
         else:
             _row(WARN, module, 'evaluation only -- pip install -e ".[eval]"')
             warnings += 1
+    for module in VIZ_DEPS:
+        if _have(module):
+            _row(OK, module, "")
+        else:
+            _row(WARN, module, '`inlier run --live` only -- pip install -e ".[viz]"')
+            warnings += 1
 
     print("\nconfiguration")
     try:
@@ -129,8 +141,13 @@ def run(args: argparse.Namespace) -> int:
         _row(FAIL, "config", str(exc).splitlines()[0])
         failures += 1
 
-    if args.dataset:
-        failures += _check_dataset(Path(args.dataset), args.dataset_type)
+    scans_dir = getattr(args, "scans_dir", None)
+    pose_file = getattr(args, "pose_file", None)
+    if args.dataset or scans_dir is not None:
+        # --scans alone is enough to check: the root is only the heading.
+        root = Path(args.dataset) if args.dataset else Path(scans_dir).parent
+        failures += _check_dataset(root, args.dataset_type, scans_dir,
+                                   pose_file, args.sequence)
 
     warnings += _check_overlap_sidecars(Path(args.overlap_dir))
 
@@ -146,18 +163,27 @@ def run(args: argparse.Namespace) -> int:
 
 LAYOUTS = {
     "helipr": "<root>/<sequence>/Undistorted/<sensor>/*.bin",
-    "generic": "<root>/scans/*.pcd + poses_kitti.txt or poses_tum.txt",
+    "generic": "<root>/scans/*.{pcd,bin} + poses_kitti.txt or poses_tum.txt",
+    "kitti": ("<root>/sequences/XX/{velodyne/*.bin, calib.txt, times.txt}"
+              " + poses/XX.txt or sequences/XX/poses.txt"),
 }
 
 
-def _check_dataset(root: Path, dataset_type: str) -> int:
+def _check_dataset(root: Path, dataset_type: str,
+                   scans_dir: Path = None, pose_file: Path = None,
+                   sequence: str = None) -> int:
     print(f"\ndataset  {root}")
-    _row(OK, "layout", f"{dataset_type} -- {LAYOUTS[dataset_type]}")
-    if not root.exists():
+    explicit = scans_dir is not None or pose_file is not None
+    _row(OK, "layout",
+         "generic -- explicit paths" if explicit
+         else f"{dataset_type} -- {LAYOUTS[dataset_type]}")
+    if not root.exists() and not explicit:
         _row(FAIL, "root", "does not exist")
         return 1
-    if dataset_type == "generic":
-        return _check_generic(root)
+    if dataset_type == "kitti":
+        return _check_kitti(root, sequence)
+    if dataset_type == "generic" or explicit:
+        return _check_generic(root, scans_dir, pose_file)
     return _check_helipr(root)
 
 
@@ -165,13 +191,122 @@ def _looks_generic(root: Path) -> bool:
     return (root / "scans").is_dir()
 
 
+def _looks_kitti(root: Path) -> bool:
+    return (root / "sequences").is_dir() or (root / "velodyne").is_dir()
+
+
 def _looks_helipr(root: Path) -> bool:
     return any((seq / "Undistorted").is_dir() or (seq / "LiDAR").is_dir()
                for seq in root.iterdir() if seq.is_dir())
 
 
+def _check_kitti(root: Path, sequence: str = None) -> int:
+    """A KITTI odometry sequence, including whether the pose frame is sane.
+
+    The frame check is the point of this one.  KITTI ships its poses in the
+    camera frame, and a run against uncorrected poses fails in a way that
+    looks like bad retrieval rather than bad geometry -- so the spans are
+    reported here, where one command answers it.
+    """
+    import numpy as np
+
+    from inlier.eval.datasets.kitti import (SCAN_SUBDIR, KITTI_Handler,
+                                            normalise_sequence, read_calib_tr)
+
+    if not _looks_kitti(root):
+        _row(FAIL, "layout mismatch",
+             f"{root} has neither sequences/ nor {SCAN_SUBDIR}/ -- this does "
+             f"not look like a KITTI odometry tree")
+        return 1
+
+    if (root / SCAN_SUBDIR).is_dir():
+        sequence = normalise_sequence(sequence or root.name)
+    elif sequence is None:
+        available = sorted(p.name for p in (root / "sequences").iterdir()
+                           if p.is_dir()) if (root / "sequences").is_dir() else []
+        _row(FAIL, "sequence", "--dataset-type kitti needs --sequence"
+             + (f" (found: {', '.join(available)})" if available else ""))
+        return 1
+    else:
+        sequence = normalise_sequence(sequence)
+
+    failures = 0
+    handler = KITTI_Handler(root, sequence, verbose=False)
+    try:
+        seq_dir = handler.seq_dir
+    except FileNotFoundError as exc:
+        _row(FAIL, "sequence", str(exc).splitlines()[0])
+        return 1
+    _row(OK, f"sequence {sequence}", str(seq_dir))
+
+    scans = []
+    try:
+        scans = handler.list_scan_files(seq_dir)
+    except (FileNotFoundError, NotADirectoryError, RuntimeError) as exc:
+        _row(FAIL, f"{SCAN_SUBDIR}/", str(exc).splitlines()[0])
+        failures += 1
+    else:
+        _row(OK, f"{SCAN_SUBDIR}/", f"{len(scans):,} .bin files")
+
+    try:
+        calib = handler.calib_file
+        Tr = read_calib_tr(calib)
+    except (OSError, ValueError) as exc:
+        _row(FAIL, "calib", str(exc).splitlines()[0])
+        return failures + 1
+    _row(OK, "calib", f"{calib}, Tr found")
+
+    try:
+        poses, stamps = handler.load_poses(seq_dir)
+    except (OSError, ValueError) as exc:
+        _row(FAIL, "poses", str(exc).splitlines()[0])
+        return failures + 1
+    pose_path, _ = handler._pose_file(seq_dir)
+    _row(OK, "poses", f"{pose_path}, {len(poses):,} poses")
+
+    if stamps:
+        _row(OK, "times.txt", f"{len(stamps):,} timestamps "
+                              f"({stamps[-1] - stamps[0]:.1f} s) "
+                              f"-- --exclusion seconds= is available")
+    else:
+        _row(WARN, "times.txt", "missing or mismatched -- "
+                                "--exclusion seconds= will not work")
+
+    if scans and len(poses) != len(scans):
+        _row(FAIL, "poses vs scans",
+             f"{len(poses):,} poses but {len(scans):,} scans -- "
+             f"load_generic requires they match")
+        failures += 1
+
+    # The frame check: KITTI drives are near-planar, so after the correction
+    # the vertical span must be by far the smallest.  WARN, never FAIL -- a
+    # short sequence straight up a hill could legitimately be tall.
+    t = np.array([p[:3, 3] for p in poses]) if poses else np.zeros((0, 3))
+    if len(t) > 1:
+        spans = np.ptp(t, axis=0)
+        detail = "  ".join(f"{a}={v:.1f}m" for a, v in zip("xyz", spans))
+        if spans[2] <= 0.2 * max(spans[0], spans[1]):
+            _row(OK, "pose frame", f"velodyne (z is vertical): {detail}")
+        else:
+            _row(WARN, "pose frame",
+                 f"z is not clearly the vertical axis: {detail}. Expected a "
+                 f"near-planar drive after the camera->velodyne correction; "
+                 f"check that {calib.name} belongs to this sequence.")
+
+    if scans:
+        failures += _check_sample_scan(scans[0])
+    return failures
+
+
 def _check_helipr(root: Path) -> int:
     sequences = sorted(p for p in root.iterdir() if p.is_dir())
+    if _looks_kitti(root) and not _looks_helipr(root):
+        # Without this a KITTI tree passes the HeLiPR check: `sequences/` reads
+        # as one sequence that merely lacks Undistorted/, which is a warning.
+        _row(FAIL, "layout mismatch", "this looks like a KITTI odometry tree "
+                                      "(it has sequences/) -- pass "
+                                      "--dataset-type kitti --sequence XX")
+        return 1
     if not sequences or (_looks_generic(root) and not _looks_helipr(root)):
         # The most likely reason a HeLiPR check finds nothing is that this is
         # not a HeLiPR tree.  Say that, rather than "no sequences found".
@@ -207,38 +342,63 @@ def _check_helipr(root: Path) -> int:
     return failures
 
 
-def _check_generic(root: Path) -> int:
-    """Flat scans/ + a pose file, per ``Generic_Handler``."""
-    if not _looks_generic(root) and _looks_helipr(root):
+def _check_generic(root: Path, scans_dir: Path = None,
+                   pose_file: Path = None) -> int:
+    """Flat scans/ + a pose file, per ``Generic_Handler``.
+
+    ``scans_dir``/``pose_file`` mirror the loader's overrides, so a dataset
+    that was never arranged into one tree can still be checked before a run.
+    """
+    from inlier.eval.datasets.generic import Generic_Handler
+
+    explicit = scans_dir is not None or pose_file is not None
+    if not explicit and not _looks_generic(root) and _looks_helipr(root):
         _row(FAIL, "layout mismatch", "this looks like a HeLiPR tree -- "
                                       "pass --dataset-type helipr")
         return 1
-
-    failures = 0
-    scans_dir = root / "scans"
-    if not scans_dir.is_dir():
-        _row(FAIL, "scans/", "not found")
+    if not explicit and not _looks_generic(root) and _looks_kitti(root):
+        _row(FAIL, "layout mismatch", "this looks like a KITTI odometry tree "
+                                      "-- pass --dataset-type kitti "
+                                      "--sequence XX")
         return 1
 
-    scans = sorted(scans_dir.glob("*.pcd"))
-    if not scans:
-        _row(FAIL, "scans/", "no .pcd files")
+    failures = 0
+    handler = Generic_Handler(verbose=False, scans_dir=scans_dir,
+                              pose_file=pose_file)
+
+    label = str(scans_dir) if scans_dir is not None else "scans/"
+    try:
+        scans = handler.list_scan_files(root)
+    except (FileNotFoundError, NotADirectoryError, RuntimeError) as exc:
+        _row(FAIL, label, str(exc))
+        scans = []
         failures += 1
     else:
-        _row(OK, "scans/", f"{len(scans):,} .pcd files")
+        _row(OK, label, f"{len(scans):,} {scans[0].suffix} files")
 
     n_poses = None
-    for name, kind in (("poses_kitti.txt", "kitti"), ("poses_tum.txt", "tum")):
-        pose_file = root / name
-        if not pose_file.exists():
-            continue
-        n_poses = sum(1 for line in pose_file.read_text().splitlines()
-                      if line.strip() and not line.startswith("#"))
-        _row(OK, "poses", f"{name} ({kind}), {n_poses:,} poses")
-        break
+    if pose_file is not None:
+        try:
+            poses, _ = handler.load_poses(root)
+        except (OSError, ValueError) as exc:
+            _row(FAIL, "poses", str(exc).splitlines()[0])
+            failures += 1
+        else:
+            n_poses = len(poses)
+            kind = handler._sniff_pose_format(pose_file)
+            _row(OK, "poses", f"{pose_file} ({kind}), {n_poses:,} poses")
     else:
-        _row(FAIL, "poses", "no poses_kitti.txt or poses_tum.txt")
-        failures += 1
+        for name, kind in (("poses_kitti.txt", "kitti"), ("poses_tum.txt", "tum")):
+            candidate = root / name
+            if not candidate.exists():
+                continue
+            n_poses = sum(1 for line in candidate.read_text().splitlines()
+                          if line.strip() and not line.startswith("#"))
+            _row(OK, "poses", f"{name} ({kind}), {n_poses:,} poses")
+            break
+        else:
+            _row(FAIL, "poses", "no poses_kitti.txt or poses_tum.txt")
+            failures += 1
 
     # Generic_Handler.load_generic raises on this, well after the submap build
     # has started; it is cheap to catch here instead.
@@ -253,14 +413,35 @@ def _check_generic(root: Path) -> int:
 
 
 def _check_sample_scan(path: Path) -> int:
-    """Read one scan: catches an unreadable file, and NaN-heavy sensors."""
+    """Read one scan: catches an unreadable file, and NaN-heavy sensors.
+
+    Goes through the loader rather than open3d directly, so a ``.bin`` gets
+    read the same way -- including the point-stride inference, which is the
+    part most worth failing here rather than mid-run.
+    """
     try:
         import numpy as np
-        import open3d as o3d
+
+        from inlier.eval.datasets.generic import Generic_Handler
     except ImportError:
         return 0
 
-    points = np.asarray(o3d.io.read_point_cloud(str(path)).points)
+    handler = Generic_Handler(verbose=False)
+    try:
+        # The finite filter is the loader's; count against the raw points so
+        # the NaN warning below still means something.
+        points = handler.load_scan_file(path)
+        if path.suffix.lower() == ".bin":
+            raw = np.fromfile(path, dtype=np.float32)
+            cols = handler._bin_cols(path, int(raw.size)) if raw.size else 4
+            points = raw.reshape(-1, cols)[:, :3] if raw.size else points
+        else:
+            import open3d as o3d
+            points = np.asarray(o3d.io.read_point_cloud(str(path)).points)
+    except (ImportError, OSError, ValueError) as exc:
+        _row(FAIL, "sample scan", f"{path.name}: {str(exc).splitlines()[0]}")
+        return 1
+
     if points.size == 0:
         _row(FAIL, "sample scan", f"{path.name}: no points read")
         return 1

@@ -50,8 +50,10 @@ COMMANDS = {
     "doctor": "inlier.cli.cmd_doctor",
     "config": "inlier.cli.cmd_config",
     "encode": "inlier.cli.cmd_encode",
+    "match": "inlier.cli.cmd_match",
     "gt": "inlier.cli.cmd_gt",
     "eval": "inlier.cli.cmd_eval",
+    "run": "inlier.cli.cmd_run",
     "play": "inlier.cli.cmd_play",
     "bench": "inlier.cli.cmd_bench",
 }
@@ -63,7 +65,9 @@ examples:
   inlier config show --set stage1.topk=50   with one value overridden
   inlier encode scan.pcd -o tokens.npz      encode a single scan
   inlier encode scan.pcd --viz              plot it and its descriptors
+  inlier match a.npz b.npz --viz            score two encodings against each other
   inlier eval cross-session --help          evaluation protocols
+  inlier run --help                         loop closures, no ground truth
 
 common flags (-c/--config, --set, --backend, -q) are accepted either
 before or after the command name.
@@ -172,9 +176,13 @@ def main(argv: Optional[List[str]] = None) -> int:
     except KeyboardInterrupt:
         print("\ninterrupted", file=sys.stderr)
         return 130
-    except (ValueError, FileNotFoundError, NotImplementedError) as exc:
-        # Expected, user-facing failures: a bad config key, a missing dataset.
-        # Anything else keeps its traceback, which is what a bug report needs.
+    except (ValueError, FileNotFoundError, NotImplementedError,
+            ModuleNotFoundError) as exc:
+        # Expected, user-facing failures: a bad config key, a missing dataset,
+        # an optional extra that was never installed.  ModuleNotFoundError and
+        # not ImportError: a module that is absent is the user's to fix, where
+        # one that is present and fails to import is a bug and keeps its
+        # traceback, which is what a bug report needs.
         print(f"inlier: {exc}", file=sys.stderr)
         return 1
 

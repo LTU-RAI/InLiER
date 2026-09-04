@@ -12,6 +12,10 @@ from pathlib import Path
 
 import numpy as np
 
+from inlier.cli._common import add_generic_layout_flags
+from inlier.cli._sources import (generic_source, kitti_source,
+                                 parse_exclusion, require_flags)
+
 
 def register(subparsers, parent) -> None:
     p = subparsers.add_parser(
@@ -21,6 +25,7 @@ def register(subparsers, parent) -> None:
     )
     sub = p.add_subparsers(dest="protocol", required=True)
     _register_cross_session(sub, parent)
+    _register_online_lcd(sub, parent)
 
 
 def _register_cross_session(sub, parent) -> None:
@@ -49,6 +54,8 @@ def _register_cross_session(sub, parent) -> None:
     generic = p.add_argument_group("generic options")
     generic.add_argument("--db-path", dest="db_path", type=str)
     generic.add_argument("--q-path", dest="q_path", type=str)
+    add_generic_layout_flags(generic, "db", "database")
+    add_generic_layout_flags(generic, "q", "query")
     generic.add_argument("--overlap-file", dest="overlap_file", type=str)
     generic.add_argument("--n-db", dest="n_db", type=int, default=1,
                          help="scans accumulated per database submap (default: 1)")
@@ -92,11 +99,134 @@ def _register_cross_session(sub, parent) -> None:
     p.set_defaults(func=run_cross_session)
 
 
-def _require(args, names, why):
-    missing = [n for n in names if not getattr(args, n.replace("-", "_"), None)]
-    if missing:
-        raise ValueError(f"--dataset-type {why} requires: "
-                         + ", ".join("--" + n for n in missing))
+def _register_online_lcd(sub, parent) -> None:
+    p = sub.add_parser(
+        "online-lcd", parents=[parent],
+        help="single-session online loop closure detection",
+        description=(
+            "Online loop closure detection: one session streams past, the "
+            "database grows as it goes, and every frame may only match frames "
+            "older than the exclusion window. Scored the way SLAM scores loop "
+            "closure -- F1max and max recall at 100% precision."
+        ),
+    )
+    p.add_argument("--dataset-type", dest="dataset_type",
+                   choices=("helipr", "generic", "kitti"), default="helipr",
+                   help="which loader to use (default: helipr)")
+    ## One sequence, so one path: the HeLiPR root, the generic sequence
+    ## directory, or the KITTI odometry root.  Unlike cross-session there is
+    ## no second session to name.
+    p.add_argument("--dataset", type=str,
+                   help="HeLiPR dataset root; the sequence directory with "
+                        "--dataset-type generic; or the KITTI odometry root "
+                        "(the folder holding sequences/), or a single KITTI "
+                        "sequence directory")
+    ## Shared by helipr and kitti, so it cannot live in either group: argparse
+    ## rejects the same option string twice.
+    p.add_argument("--sequence", type=str,
+                   help="sequence name (helipr), or the two-digit sequence "
+                        "id with --dataset-type kitti, e.g. 00")
+
+    helipr = p.add_argument_group("helipr options")
+    helipr.add_argument("--sensor", type=str, help="sensor, e.g. Ouster or Aeva")
+
+    generic = p.add_argument_group("generic / kitti options")
+    generic.add_argument("--n-scans", dest="n_scans", type=int, default=1,
+                         help="scans accumulated per submap (default: 1)")
+    generic.add_argument("--stride", type=int, default=None,
+                         help="step between submaps (default: --n-scans)")
+    add_generic_layout_flags(generic)
+
+    gt = p.add_argument_group("ground truth")
+    gt.add_argument("--exclusion", type=str, default="frames=100",
+                    help="how much recent past a frame may not match: "
+                         "frames=N, seconds=S or metres=M (default: frames=100)")
+    gt.add_argument("--max-pose-dist", dest="max_pose_dist", type=float, default=10.0,
+                    help="maximum XY pose distance for a true revisit "
+                         "(default: 10.0)")
+    gt.add_argument("--search-radius", dest="search_radius", type=float, default=0.0,
+                    help="restrict the database to frames within this many "
+                         "metres of the query, as a SLAM local map would. "
+                         "0 searches the whole causal past (default: 0). "
+                         "WARNING: this measures against the ground-truth "
+                         "pose, so it is an oracle and inflates every metric; "
+                         "runs that use it are flagged in the results JSON")
+
+    out = p.add_argument_group("output")
+    out.add_argument("-o", "--output-dir", dest="output_dir", type=str,
+                     default="results")
+    out.add_argument("--cache-dir", dest="cache_dir", type=str,
+                     default="cache_inlier",
+                     help="descriptor cache; '' disables (default: cache_inlier)")
+    out.add_argument("--threshold-policy", dest="threshold_policy",
+                     choices=("max_precision", "max_f1", "fixed"),
+                     default="max_precision",
+                     help="how to pick the operating threshold (default: "
+                          "max_precision; f1_max and max-recall-at-100%%-precision "
+                          "are reported whichever is chosen)")
+    out.add_argument("--threshold", "--pr-threshold", dest="threshold_value",
+                     type=float, default=None,
+                     help="operating threshold; implies --threshold-policy fixed")
+    p.set_defaults(func=run_online_lcd)
+
+
+def run_online_lcd(args) -> int:
+    from inlier.cli._common import resolved_config
+    from inlier.eval import artifacts
+    from inlier.eval.datasets import GenericSource, HeLiPRSource
+    from inlier.eval.protocols.online_lcd import OnlineLCDSpec, run
+
+    resolved = resolved_config(args, mode="eval")
+    quiet = getattr(args, "quiet", False)
+    policy = args.threshold_policy
+    if args.threshold_value is not None:
+        policy = "fixed"
+    exclusion = parse_exclusion(args.exclusion)
+
+    if args.dataset_type == "helipr":
+        require_flags(args, ["dataset", "sequence", "sensor"], "helipr")
+        source = HeLiPRSource(args.dataset, args.sequence, args.sensor,
+                              verbose=not quiet)
+        name, sensor = args.sequence, args.sensor
+    elif args.dataset_type == "kitti":
+        stride = args.stride if args.stride is not None else args.n_scans
+        source = kitti_source(args, n_scans=args.n_scans, stride=stride,
+                               verbose=not quiet)
+        name, sensor = source.sequence, source.describe()["sensor"]
+    else:
+        stride = args.stride if args.stride is not None else args.n_scans
+        source = generic_source(args, n_scans=args.n_scans, stride=stride,
+                                 verbose=not quiet)
+        name, sensor = source.path.name, "q"
+
+    exp_dir = artifacts.experiment_dirname(
+        name, sensor, name, "online",
+        resolved.voxel_size, resolved.inlier.cell_size,
+        resolved.inlier.N_h, resolved.inlier.N_r,
+        resolved.inlier.N_a, resolved.inlier.N_s)
+    tag = (f"{name}_{sensor}_lcd_{exclusion.unit}"
+           f"{getattr(exclusion, exclusion.unit)}_pd{args.max_pose_dist}m")
+    if args.search_radius > 0:
+        tag += f"_r{args.search_radius}m"
+
+    spec = OnlineLCDSpec(
+        resolved=resolved,
+        source=source,
+        exclusion=exclusion,
+        output_dir=Path(args.output_dir) / exp_dir,
+        max_pose_dist=args.max_pose_dist,
+        search_radius=args.search_radius,
+        cache_dir=Path(args.cache_dir) if args.cache_dir else None,
+        threshold_policy=policy,
+        threshold_value=args.threshold_value,
+        config_path=Path(args.config) if args.config else None,
+        verbose=not quiet,
+        tag=tag,
+    )
+    result = run(spec)
+    if not quiet:
+        print("\n" + result.summary())
+    return 0
 
 
 def run_cross_session(args: argparse.Namespace) -> int:
@@ -114,7 +244,7 @@ def run_cross_session(args: argparse.Namespace) -> int:
 
     transform = None
     if args.dataset_type == "helipr":
-        _require(args, ["dataset", "db-sequence", "q-sequence", "pair"], "helipr")
+        require_flags(args, ["dataset", "db-sequence", "q-sequence", "pair"], "helipr")
         db_sensor, q_sensor = parse_pair(args.pair)
         db_source = HeLiPRSource(args.dataset, args.db_sequence, db_sensor, verbose=not quiet)
         q_source = HeLiPRSource(args.dataset, args.q_sequence, q_sensor, verbose=not quiet)
@@ -129,18 +259,23 @@ def run_cross_session(args: argparse.Namespace) -> int:
         tag = (f"{args.db_sequence}_{db_sensor}_{args.q_sequence}_{q_sensor}"
                f"_ov{args.overlap_threshold}_pd{args.max_pose_dist}m")
     else:
-        _require(args, ["db-path", "q-path", "overlap-file"], "generic")
-        db_path, q_path = Path(args.db_path), Path(args.q_path)
+        require_flags(args, ["overlap-file"], "generic")
+        stride_db = args.stride_db if args.stride_db is not None else args.n_db
+        stride_q = args.stride_q if args.stride_q is not None else args.n_q
+        db_source = generic_source(args, prefix="db", n_scans=args.n_db,
+                                    stride=stride_db, verbose=not quiet)
+        q_source = generic_source(args, prefix="q", n_scans=args.n_q,
+                                   stride=stride_q, verbose=not quiet)
+        # Both are the sequence identity, whether it came from --db-path or was
+        # derived from --db-scans, so the default transform lookup and the run
+        # directory keep working either way.
+        db_path, q_path = db_source.path, q_source.path
         if not args.no_transform:
             candidate = Path(args.transform) if args.transform else db_path / "transform.txt"
             if candidate.exists():
                 transform = load_transform(candidate)
             elif args.transform:
                 raise FileNotFoundError(f"transform not found: {candidate}")
-        stride_db = args.stride_db if args.stride_db is not None else args.n_db
-        stride_q = args.stride_q if args.stride_q is not None else args.n_q
-        db_source = GenericSource(db_path, args.n_db, stride_db, verbose=not quiet)
-        q_source = GenericSource(q_path, args.n_q, stride_q, verbose=not quiet)
         overlap_path = Path(args.overlap_file)
         exp_dir = artifacts.experiment_dirname(
             db_path.name, "db", q_path.name, "q",

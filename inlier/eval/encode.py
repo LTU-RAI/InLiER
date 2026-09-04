@@ -83,7 +83,24 @@ def voxel_downsample(points: np.ndarray, voxel_size: float) -> np.ndarray:
     if voxel_size <= 0 or points.size == 0:
         return points
     keys = np.floor(points / voxel_size).astype(np.int64)
-    _, keep = np.unique(keys, axis=0, return_index=True)
+
+    # `np.unique(keys, axis=0)` is the obvious spelling and the slow one: it
+    # builds a structured void view of every row and lexsorts that, which on a
+    # half-million-point scan costs ~250 ms -- eight times what encoding the
+    # result costs.  Folding the three coordinates into one integer turns it
+    # into a plain 1-D sort.  The fold is injective whenever the grid fits in
+    # an int64, so the surviving indices are exactly the ones the row-wise
+    # unique would have kept; when it does not fit, fall back rather than
+    # silently collide two voxels into one.
+    lo = keys.min(axis=0)
+    extent = (keys.max(axis=0) - lo).astype(object) + 1
+    if int(extent[0]) * int(extent[1]) * int(extent[2]) <= np.iinfo(np.int64).max:
+        shifted = keys - lo
+        flat = ((shifted[:, 0] * int(extent[1]) + shifted[:, 1]) * int(extent[2])
+                + shifted[:, 2])
+        _, keep = np.unique(flat, return_index=True)
+    else:
+        _, keep = np.unique(keys, axis=0, return_index=True)
     return points[np.sort(keep)]
 
 
@@ -131,6 +148,16 @@ def _from_cache(path: Path, verbose: bool) -> EncodedSequence:
 def _save_cache(path: Path, enc: EncodedSequence, verbose: bool) -> None:
     tids = [t.token_id for t in enc.tokens]
     lengths = np.array([len(t) for t in tids], dtype=np.int64)
+    # Keypoints are stored flat and sliced back by the *token* offsets, so one
+    # keypoint per token is the format's invariant.  Violating it writes a file
+    # that reads back as ragged garbage and crashes in verification rather than
+    # here, so it is worth one pass to say which scan is wrong.
+    for i, (n_tok, kp) in enumerate(zip(lengths, enc.kp_aligned)):
+        if len(kp) != n_tok:
+            raise ValueError(
+                f"scan {i}: {len(kp)} keypoints for {n_tok} tokens. The "
+                f"descriptor cache slices keypoints by token offset and needs "
+                f"exactly one keypoint per token.")
     np.savez_compressed(
         path,
         positions=enc.positions,
@@ -145,6 +172,44 @@ def _save_cache(path: Path, enc: EncodedSequence, verbose: bool) -> None:
     )
     if verbose:
         print(f"  [cache] saved {path.name}")
+
+
+def prepare_points(points: np.ndarray, voxel_size: float = 0.0) -> np.ndarray:
+    """What the encoder is actually given: zero rows dropped, then downsampled.
+
+    Split out of :func:`encode_frame` because it is not a rounding error next
+    to the encoding -- on a half-million-point scan the downsample costs
+    several times what encoding the result costs -- so a live view that bills
+    the two together is reporting the wrong number as "encode".
+    """
+    pts = np.asarray(points, dtype=np.float32)
+    # HeLiPR pads short scans with exact zero rows; they are not measurements.
+    pts = pts[np.any(pts != 0, axis=1)]
+    if voxel_size > 0:
+        pts = voxel_downsample(pts, voxel_size)
+    return pts
+
+
+def encode_frame(encoder, points: np.ndarray, voxel_size: float = 0.0):
+    """Encode one scan: ``(tokens, kp_aligned, kp_sensor, T_ground)``.
+
+    The whole per-scan body of :func:`encode_sequence`, lifted out so the
+    streaming driver encodes a frame exactly the way the batch path does --
+    same zero-row drop, same downsample, same too-few-points fallback.  A
+    divergence here would be a divergence in every descriptor.
+    """
+    pts = prepare_points(points, voxel_size)
+    if pts.shape[0] < 10:
+        return (empty_tokens(),
+                np.zeros((0, 3), dtype=np.float64),
+                np.zeros((0, 3), dtype=np.float64),
+                np.eye(4, dtype=np.float64))
+
+    kp, tok = encoder.encode(pts, verbose=False)
+    return (tok,
+            np.asarray(kp.p_aligned, dtype=np.float64),
+            np.asarray(kp.p, dtype=np.float64),
+            np.asarray(kp.T_ground, dtype=np.float64))
 
 
 def encode_sequence(
@@ -193,23 +258,11 @@ def encode_sequence(
             pass
 
     for i in iterator:
-        pts = np.asarray(clouds[i], dtype=np.float32)
-        # HeLiPR pads short scans with exact zero rows; they are not measurements.
-        pts = pts[np.any(pts != 0, axis=1)]
-        if voxel_size > 0:
-            pts = voxel_downsample(pts, voxel_size)
-
-        if pts.shape[0] < 10:
-            tokens.append(empty_tokens())
-            kp_aligned.append(np.zeros((0, 3), dtype=np.float64))
-            kp_sensor.append(np.zeros((0, 3), dtype=np.float64))
-            T_grounds.append(np.eye(4, dtype=np.float64))
-        else:
-            kp, tok = encoder.encode(pts, verbose=False)
-            tokens.append(tok)
-            kp_aligned.append(np.asarray(kp.p_aligned, dtype=np.float64))
-            kp_sensor.append(np.asarray(kp.p, dtype=np.float64))
-            T_grounds.append(np.asarray(kp.T_ground, dtype=np.float64))
+        tok, kp_a, kp_s, T_g = encode_frame(encoder, clouds[i], voxel_size)
+        tokens.append(tok)
+        kp_aligned.append(kp_a)
+        kp_sensor.append(kp_s)
+        T_grounds.append(T_g)
 
         # Whole sequences of dense scans are held at once; without this the
         # peak RSS on a 2700-scan sequence grows well past what the freed

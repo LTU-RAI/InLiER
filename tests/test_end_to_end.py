@@ -33,6 +33,28 @@ def test_cpp_backend_active():
     assert issubclass(InLiER_Matcher, RefMatcher)
 
 
+def test_every_public_stage_is_a_cpp_override():
+    """The reason the other equivalence files import from ``reference``.
+
+    Subclassing means a wrapper method that is *not* overridden silently falls
+    back to numpy and still looks like the shipped path.  Pinning the override
+    set here says which methods this file is actually comparing, and makes the
+    converse explicit: a test that pairs one of these against
+    ``_inlier_pybind`` is comparing the C++ core against itself.
+    """
+    for cls, ref, overridden in (
+        (InLiER, RefInLiER,
+         {"encode", "extract_keypoints", "tokenize", "tokenize_keypoints"}),
+        (InLiER_Matcher, RefMatcher,
+         {"add", "finalize", "reserve", "get_scan_data",
+          "shortlist", "beam_score", "rerank", "verify"}),
+    ):
+        got = {n for n in dir(ref) if not n.startswith("_")
+               and callable(getattr(ref, n, None))
+               and getattr(cls, n, None) is not getattr(ref, n, None)}
+        assert got == overridden, f"{cls.__name__} override set moved: {got}"
+
+
 def test_public_exports_unchanged():
     assert {"InLiER", "InLiER_Matcher", "InLiER_Config"} <= set(inlier.__all__)
     ## statics inherited from the reference implementation

@@ -117,29 +117,24 @@ def _load_sequence_metadata(handler, sequence, sensor, scan_type):
 
 
 # ---------------------------------------------------------------------------
-#  Generic dataset loading (pcd + poses_kitti.txt)
+#  Generic dataset loading (scans + a KITTI or TUM pose file)
 # ---------------------------------------------------------------------------
 
-def _load_kitti_poses(poses_file: Path) -> list:
-    """Read KITTI-format poses: 12 values per line → list of 4x4 np.ndarray."""
-    poses = []
-    with open(poses_file) as f:
-        for line in f:
-            vals = list(map(float, line.strip().split()))
-            if len(vals) == 12:
-                T = np.eye(4)
-                T[:3, :] = np.array(vals).reshape(3, 4)
-                poses.append(T)
-    return poses
-
-
-def _load_generic_sequence_metadata(seq_path: Path, inter_transform: np.ndarray = None):
+def _load_generic_sequence_metadata(seq_path: Path, inter_transform: np.ndarray = None,
+                                    scans_dir=None, pose_file=None):
     """Load poses and scan list for a generic dataset directory.
 
     seq_path       – directory with scans/ subdirectory and poses_kitti.txt
     inter_transform – 4x4 matrix that maps this sequence's world frame into the
                       common reference frame (e.g. T_robinw_ouster for the DB).
                       Pass None for the sequence that defines the reference frame.
+    scans_dir /
+    pose_file      – explicit paths, overriding the conventional layout.
+
+    Goes through ``Generic_Handler`` rather than reading the files here, so the
+    matrix is built from the same poses and the same scan list the evaluation
+    will later read.  This used to be a private KITTI-only parser, which meant
+    a TUM-only dataset could be evaluated but not have ground truth built.
 
     Returns
     -------
@@ -147,8 +142,11 @@ def _load_generic_sequence_metadata(seq_path: Path, inter_transform: np.ndarray 
     effective_poses : list[np.ndarray]   – 4x4 poses in reference frame
     scan_files      : list[Path]
     """
-    poses = _load_kitti_poses(seq_path / "poses_kitti.txt")
-    scan_files = sorted((seq_path / "scans").glob("*.pcd"))
+    from inlier.eval.datasets.generic import Generic_Handler
+
+    handler = Generic_Handler(verbose=False, scans_dir=scans_dir, pose_file=pose_file)
+    poses, _ = handler.load_poses(seq_path)
+    scan_files = handler.list_scan_files(seq_path)
 
     if len(scan_files) != len(poses):
         raise ValueError(
@@ -165,13 +163,18 @@ def _load_generic_sequence_metadata(seq_path: Path, inter_transform: np.ndarray 
 
 
 def _load_and_voxelize_pcd(pcd_files, poses, voxel_size, max_range):
-    """Load N .pcd scans, transform each to global with its own pose,
+    """Load N scans, transform each to global with its own pose,
     concatenate and voxelize once.  N=1 recovers single-scan behavior.
+
+    Reads through ``Generic_Handler`` so ``.bin`` scans work here too; it also
+    drops non-finite points, which the bare open3d read did not.
     """
+    from inlier.eval.datasets.generic import Generic_Handler
+
+    handler = Generic_Handler(verbose=False)
     all_pts = []
     for pcd_file, pose in zip(pcd_files, poses):
-        cloud = o3d.io.read_point_cloud(str(pcd_file))
-        pts = np.asarray(cloud.points, dtype=np.float64)
+        pts = handler.load_scan_file(pcd_file).astype(np.float64)
         if max_range > 0 and pts.shape[0] > 0:
             r = np.linalg.norm(pts, axis=1)
             pts = pts[r <= max_range]
@@ -463,14 +466,21 @@ def build_overlap_matrix_generic(
     n_q=1,
     stride_db=None,
     stride_q=None,
+    db_scans_dir=None,
+    db_pose_file=None,
+    q_scans_dir=None,
+    q_pose_file=None,
 ):
-    """Build an NxM HeLiOS overlap matrix for a generic pcd+poses_kitti.txt dataset.
+    """Build an NxM HeLiOS overlap matrix for a generic scans+poses dataset.
 
     inter_transform – 4x4 matrix T that maps the DB world frame into the Q world
                       frame (e.g. T_robinw_ouster when DB=ouster, Q=robinw).
                       Pass None if both sequences already share a common frame.
     n_db / n_q      – submap size per sequence (first scan's pose = keyframe).
     stride_db / stride_q – step between successive submaps (default = n_db/n_q).
+    db_scans_dir / db_pose_file, q_scans_dir / q_pose_file –
+                      explicit paths, for a sequence not laid out as
+                      ``<path>/scans`` beside ``poses_*.txt``.
     """
     db_path = Path(db_path)
     q_path = Path(q_path)
@@ -495,9 +505,9 @@ def build_overlap_matrix_generic(
 
     print(f"\n  [Step 1/{n_steps}] Loading poses & listing scans ...")
     db_pos_raw, db_poses_raw, db_files_raw = _load_generic_sequence_metadata(
-        db_path, inter_transform)
+        db_path, inter_transform, db_scans_dir, db_pose_file)
     q_pos_raw, q_poses_raw, q_files_raw = _load_generic_sequence_metadata(
-        q_path, None)
+        q_path, None, q_scans_dir, q_pose_file)
 
     db_pos, db_poses, db_files = _group_into_submaps(
         db_pos_raw, db_poses_raw, db_files_raw, n_db, stride=eff_stride_db)
@@ -589,6 +599,26 @@ def main(argv=None):
     generic.add_argument(
         "--q-path", type=str,
         help="Path to the Q dataset directory (contains scans/ and poses_kitti.txt)."
+    )
+    generic.add_argument(
+        "--db-scans", dest="db_scans_dir", type=str, default=None, metavar="DIR",
+        help="Directory holding the DB scan files (.pcd or .bin); "
+             "overrides <db_path>/scans."
+    )
+    generic.add_argument(
+        "--db-poses", dest="db_pose_file", type=str, default=None, metavar="FILE",
+        help="DB pose file, KITTI (12 values) or TUM (8), detected by its "
+             "contents; overrides <db_path>/poses_*.txt."
+    )
+    generic.add_argument(
+        "--q-scans", dest="q_scans_dir", type=str, default=None, metavar="DIR",
+        help="Directory holding the Q scan files (.pcd or .bin); "
+             "overrides <q_path>/scans."
+    )
+    generic.add_argument(
+        "--q-poses", dest="q_pose_file", type=str, default=None, metavar="FILE",
+        help="Q pose file, KITTI (12 values) or TUM (8), detected by its "
+             "contents; overrides <q_path>/poses_*.txt."
     )
     generic.add_argument(
         "--transform", type=str, default=None,
@@ -740,13 +770,20 @@ def main(argv=None):
 
     # ---- generic mode -------------------------------------------------------
     else:
-        if not args.db_path or not args.q_path:
-            parser.error(
-                "--db-path and --q-path are required for --dataset-type generic"
-            )
+        # A sequence can be named either by its directory or by --*-scans;
+        # the directory is still the identity that names the output matrix.
+        if not args.db_path and not args.db_scans_dir:
+            parser.error("--dataset-type generic needs --db-path or --db-scans")
+        if not args.q_path and not args.q_scans_dir:
+            parser.error("--dataset-type generic needs --q-path or --q-scans")
+        for side in ("db", "q"):
+            if (not getattr(args, f"{side}_path")
+                    and not getattr(args, f"{side}_pose_file")):
+                parser.error(f"--{side}-scans without --{side}-path also needs "
+                             f"--{side}-poses")
 
-        db_path = Path(args.db_path)
-        q_path = Path(args.q_path)
+        db_path = Path(args.db_path) if args.db_path else Path(args.db_scans_dir).parent
+        q_path = Path(args.q_path) if args.q_path else Path(args.q_scans_dir).parent
 
         # Resolve transform path
         transform_path = args.transform
@@ -782,6 +819,10 @@ def main(argv=None):
             n_q=args.n_q,
             stride_db=args.stride_db,
             stride_q=args.stride_q,
+            db_scans_dir=args.db_scans_dir,
+            db_pose_file=args.db_pose_file,
+            q_scans_dir=args.q_scans_dir,
+            q_pose_file=args.q_pose_file,
         )
 
         eff_sdb = args.stride_db if args.stride_db is not None else args.n_db

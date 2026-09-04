@@ -16,7 +16,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from inlier.cli._common import user_path
+from inlier.cli._common import add_generic_layout_flags, user_path
 
 SCAN_SUFFIXES = (".pcd", ".ply", ".bin", ".npy")
 VIZ_SUFFIXES = (".png", ".pdf", ".svg", ".jpg", ".jpeg")
@@ -51,8 +51,11 @@ def register(subparsers, parent) -> None:
     data.add_argument("--dataset", type=user_path, default=None, metavar="ROOT",
                       help="dataset root, instead of a scan path")
     data.add_argument("--dataset-type", dest="dataset_type",
-                      choices=("generic", "helipr"), default="generic",
+                      choices=("generic", "helipr", "kitti"), default="generic",
                       help="loader for --dataset (default: generic)")
+    data.add_argument("--sequence", type=str, default=None, metavar="XX",
+                      help="KITTI sequence id, e.g. 00; not needed when "
+                           "--dataset is itself a sequence directory")
     data.add_argument("--n-scans", dest="n_scans", type=int,
                       default=1, metavar="N",
                       help="scans per submap; must match the overlap ground "
@@ -60,6 +63,7 @@ def register(subparsers, parent) -> None:
     data.add_argument("--stride", type=int, default=None, metavar="N",
                       help="step between submaps (default: --n-scans, "
                            "i.e. non-overlapping)")
+    add_generic_layout_flags(data)
     which = data.add_mutually_exclusive_group()
     which.add_argument("--index", type=int, default=None, metavar="I",
                        help="which submap to encode (default: 0); "
@@ -145,6 +149,67 @@ def _submap_selection(args) -> list:
     return [0 if args.index is None else args.index]
 
 
+def _submap_mode(args) -> bool:
+    """Whether this invocation builds submaps rather than encoding one file."""
+    return args.dataset is not None or getattr(args, "scans_dir", None) is not None
+
+
+def _dataset_root(args) -> Path:
+    """The sequence's identity, whichever loader named it."""
+    if args.dataset_type == "kitti":
+        return _kitti_handler(args, quiet=True)[1]
+    return _generic_root(args)
+
+
+def _kitti_handler(args, quiet: bool):
+    """``(handler, sequence_dir)`` for a KITTI submap encode.
+
+    The sequence directory is what the rest of this module treats as the
+    dataset root, so the range-check message and the figure title read ``00``
+    rather than the name of whatever folder the whole benchmark lives in.
+    """
+    from inlier.eval.datasets.kitti import (SCAN_SUBDIR, KITTI_Handler,
+                                            normalise_sequence)
+
+    root = Path(args.dataset)
+    if not root.is_dir():
+        raise FileNotFoundError(f"--dataset {root} is not a directory")
+    if (root / SCAN_SUBDIR).is_dir():
+        sequence = normalise_sequence(args.sequence or root.name)
+    elif args.sequence:
+        sequence = normalise_sequence(args.sequence)
+    else:
+        raise ValueError(
+            "--dataset-type kitti needs --sequence (e.g. --sequence 00), "
+            f"unless --dataset points straight at a sequence directory -- one "
+            f"containing {SCAN_SUBDIR}/.")
+    handler = KITTI_Handler(root, sequence, verbose=not quiet)
+    return handler, handler.seq_dir
+
+
+def _generic_root(args) -> Path:
+    """The sequence's identity: ``--dataset``, or the scans folder's parent.
+
+    Only ever used as a *name* -- the provenance record, the figure title, the
+    range check's error message.  Where the data is actually read from is the
+    handler's business, which is why an explicit ``--scans`` needs no dataset
+    directory to sit under.
+    """
+    if args.dataset is not None:
+        root = Path(args.dataset)
+        if not root.is_dir():
+            raise FileNotFoundError(f"--dataset {root} is not a directory")
+        return root
+    scans_dir = getattr(args, "scans_dir", None)
+    if scans_dir is None:
+        raise ValueError("no dataset: pass --dataset, or --scans with --poses")
+    if getattr(args, "pose_file", None) is None:
+        raise ValueError(
+            "--scans without --dataset also needs --poses: there is nowhere "
+            "else to look for the poses")
+    return Path(scans_dir).parent
+
+
 def _load_submaps(args, quiet: bool):
     """Build the requested submaps, reading only the scans they need.
 
@@ -164,11 +229,13 @@ def _load_submaps(args, quiet: bool):
     from inlier.eval.datasets.generic import Generic_Handler
     from inlier.eval.submaps import submap_count
 
-    root = Path(args.dataset)
-    if not root.is_dir():
-        raise FileNotFoundError(f"--dataset {root} is not a directory")
-
-    handler = Generic_Handler(verbose=not quiet)
+    if args.dataset_type == "kitti":
+        handler, root = _kitti_handler(args, quiet)
+    else:
+        root = _generic_root(args)
+        handler = Generic_Handler(verbose=not quiet,
+                                  scans_dir=getattr(args, "scans_dir", None),
+                                  pose_file=getattr(args, "pose_file", None))
     stride = args.n_scans if args.stride is None else args.stride
     total = submap_count(len(handler.list_scan_files(root)), args.n_scans, stride)
 
@@ -221,7 +288,9 @@ def _file_items(args, quiet: bool):
         points, n_dropped = _load_points(scan)
         if n_dropped and not quiet:
             print(f"{scan.name}: dropped {n_dropped:,} non-finite point(s)")
-        items.append((scan.name, scan.stem, points, {}))
+        # `source` lets `inlier match` reload the cloud later; it is also the
+        # only record of where a file-mode encoding came from.
+        items.append((scan.name, scan.stem, points, {"source": str(scan)}))
     return items, len(scans) > 1 or src.is_dir()
 
 
@@ -239,8 +308,14 @@ def _submap_items(args, quiet: bool):
                 "n_scans": args.n_scans,
                 "stride": stride,
                 "submap_index": index,
+                # Which loader built it.  Without this the cloud cannot be
+                # reloaded later -- `inlier match` would try KITTI's sequence
+                # directory as a generic one and find no scans/ beside it,
+                # and a KITTI cloud rebuilt with uncorrected poses would be
+                # wrong rather than merely missing.
+                "dataset_type": args.dataset_type,
                 "keyframe_pose": pose,
-                "dataset": str(args.dataset),
+                "dataset": str(_dataset_root(args)),
             },
         ))
     return items, len(items) > 1
@@ -256,10 +331,10 @@ def run(args: argparse.Namespace) -> int:
     viz = args.viz or args.viz_save is not None
     if args.output is None and not viz:
         raise ValueError("nothing to do: pass -o/--output, --viz, or both.")
-    if (args.input is None) == (args.dataset is None):
+    if (args.input is None) == (not _submap_mode(args)):
         raise ValueError(
-            "pass either a scan path or --dataset ROOT, not both and not "
-            "neither.")
+            "pass either a scan path or a dataset (--dataset ROOT, or --scans "
+            "with --poses), not both and not neither.")
     if args.input is not None:
         for flag, value in (("--n-scans", args.n_scans != 1),
                             ("--stride", args.stride is not None),
@@ -267,14 +342,14 @@ def run(args: argparse.Namespace) -> int:
                             ("--range", args.submap_range is not None)):
             if value:
                 raise ValueError(
-                    f"{flag} needs --dataset: submaps are built from poses, "
+                    f"{flag} needs a dataset: submaps are built from poses, "
                     f"which a bare scan path does not carry.")
 
     resolved = resolved_config(args, mode="deploy")
     voxel_size = args.voxel_size if args.voxel_size is not None else resolved.voxel_size
     quiet = getattr(args, "quiet", False)
 
-    if args.dataset is not None:
+    if _submap_mode(args):
         items, many = _submap_items(args, quiet)
     else:
         items, many = _file_items(args, quiet)
@@ -352,8 +427,10 @@ def run(args: argparse.Namespace) -> int:
 
 
 def _title(args, label: str, extra: dict) -> str:
-    if not extra:
+    # Keyed on the submap fields, not on `extra` being empty: file-mode
+    # encodings now carry a `source` entry too.
+    if "submap_index" not in extra:
         return str(Path(args.input) if Path(args.input).is_file()
                    else Path(args.input) / label)
-    return (f"{Path(args.dataset).name}  {label}  "
+    return (f"{_dataset_root(args).name}  {label}  "
             f"(n_scans={extra['n_scans']}, stride={extra['stride']})")

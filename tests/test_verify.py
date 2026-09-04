@@ -2,6 +2,13 @@
 statistical (different seeded stream); refine/tz/kp-inlier stages are
 deterministic given the same inlier set. Uses real cached keypoints +
 tokens from adjacent Roundabout scans (true loop pairs).
+
+The reference side is ``inlier.core.reference.InLiER_Matcher``, imported
+explicitly. Most of this file drives numpy helpers that the shipped wrapper
+inherits unchanged (``_unpack``, ``_find_correspondences``, ``_ransac_2d_rigid``,
+``_refine_2d_rigid``, ``_count_keypoint_inliers``), but ``verify`` itself is a
+C++ override on the wrapper -- so ``test_verify_statistical_agreement`` would
+have compared the core against itself had it been given the wrapper.
 """
 
 from __future__ import annotations
@@ -19,11 +26,11 @@ from inlier.core.Dataclasses import (
     InLiER_Tokens,
     VerifyConfig,
 )
-from inlier.core.InLiER_Matcher import InLiER_Matcher 
+from inlier.core.reference.InLiER_Matcher import InLiER_Matcher
 
 from conftest import CACHE_DIR, DEFAULT_CACHE_HASH
 
-## Eval-config verify gates (config/default.yaml verify:)
+## Eval-config verify gates (inlier/config/default.yaml verify:)
 VCFG_KW = dict(ransac_iters=500, inlier_dist_thresh=1.0,
                min_correspondences=32, min_ransac_inliers=16,
                min_keypoint_inliers=8, spatial_tol=0, seed=0)

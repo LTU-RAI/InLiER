@@ -295,7 +295,7 @@ def test_snake_spelling_still_reaches_a_command(capsys, generic_dataset):
     code, out = _run(capsys, "doctor", "--dataset", str(generic_dataset),
                      "--dataset_type", "generic")
     assert code == 0
-    assert "generic -- <root>/scans/*.pcd" in out.out
+    assert "generic -- <root>/scans/*.{pcd,bin}" in out.out
 
 
 def test_snake_spelling_survives_passthrough_to_a_wrapped_script(capsys):
@@ -303,7 +303,9 @@ def test_snake_spelling_survives_passthrough_to_a_wrapped_script(capsys):
     with pytest.raises(SystemExit) as exc:
         main(["gt", "build", "--dataset_type", "generic"])
     assert exc.value.code == 2
-    assert "--db-path and --q-path are required" in capsys.readouterr().err
+    # Any error from the wrapped parser proves the rewrite landed; this one
+    # says the generic mode was actually selected.
+    assert "generic needs --db-path or --db-scans" in capsys.readouterr().err
 
 
 def test_help_offers_one_spelling_per_flag(capsys):
@@ -568,7 +570,8 @@ def test_submap_flags_need_a_dataset(capsys, scan_file, tmp_path):
     code, out = _run(capsys, "encode", str(scan_file), "--n-scans", "10",
                      "-o", str(tmp_path / "x.npz"))
     assert code == 1
-    assert "--n-scans needs --dataset" in out.err
+    # "a dataset", not "--dataset": --scans/--poses name one too.
+    assert "--n-scans needs a dataset" in out.err
 
 
 def test_a_scan_path_and_a_dataset_are_mutually_exclusive(
@@ -585,3 +588,180 @@ def test_a_malformed_range_is_rejected(capsys, posed_dataset, tmp_path, spec):
                      "--range", spec, "-o", str(tmp_path / "x.npz"))
     assert code == 1
     assert "--range" in out.err
+
+
+## --- eval online-lcd dispatch ---
+
+
+def test_online_lcd_is_registered(capsys):
+    ## argparse exits from --help rather than returning through main()
+    with pytest.raises(SystemExit) as exc:
+        main(["eval", "online-lcd", "--help"])
+    assert exc.value.code == 0
+    out = capsys.readouterr().out
+    assert "--exclusion" in out
+    assert "loop closure" in out.lower()
+
+
+@pytest.mark.parametrize("argv", [
+    ("eval", "online-lcd", "--sequence", "Roundabout01"),
+    ("eval", "online-lcd", "--dataset-type", "generic"),
+])
+def test_online_lcd_requires_a_dataset(capsys, argv):
+    """Both loaders name their input with --dataset; there is one sequence."""
+    code, out = _run(capsys, *argv)
+    assert code == 1
+    assert "--dataset" in out.err
+    assert "Traceback" not in out.err
+
+
+def test_online_lcd_generic_takes_dataset_as_the_path(capsys, tmp_path):
+    """--dataset is the sequence directory for generic, not a second flag."""
+    code, out = _run(capsys, "eval", "online-lcd", "--dataset-type", "generic",
+                     "--dataset", str(tmp_path / "missing"))
+    ## gets past argument validation and into the loader
+    assert code == 1
+    assert "--dataset" not in out.err
+    assert "Traceback" not in out.err
+
+
+@pytest.mark.parametrize("bad", ["100", "frames", "furlongs=3", "frames=abc"])
+def test_online_lcd_rejects_a_unitless_exclusion(capsys, tmp_path, bad):
+    """The window must name its unit; frames, seconds and metres differ."""
+    code, out = _run(capsys, "eval", "online-lcd", "--dataset", str(tmp_path),
+                     "--sequence", "S", "--sensor", "Ouster",
+                     "--exclusion", bad)
+    assert code == 1
+    assert "--exclusion" in out.err
+    assert "Traceback" not in out.err
+
+
+# --- inlier run ------------------------------------------------------------
+#
+#  Mode is inferred from which vocabulary of flags was used, so the inference
+#  and its refusals are the part worth pinning: a wrong mode would run the
+#  whole pipeline and produce plausible output against the wrong database.
+
+def test_run_is_registered(capsys):
+    with pytest.raises(SystemExit):
+        main(["run", "--help"])
+    body = capsys.readouterr().out
+    assert "--threshold" in body and "--db-sequence" in body
+
+
+@pytest.mark.parametrize("given,cross", [
+    ({"sequence": "a", "sensor": "Ouster"}, False),
+    ({"db_sequence": "a", "q_sequence": "b"}, True),
+    ({"pair": "O-Aeva"}, True),      # --pair alone still means cross-session
+    ({"n_db": 5}, True),             # so does an accumulation flag
+    ({}, False),                     # nothing given -> stream one session
+])
+def test_run_infers_the_mode(given, cross):
+    """A prior map is named, never declared -- so the naming has to be read."""
+    from types import SimpleNamespace
+
+    from inlier.cli.cmd_run import CROSS_DESTS, SINGLE_DESTS, resolve_mode
+
+    args = SimpleNamespace(**{d: None for d in CROSS_DESTS + SINGLE_DESTS})
+    for key, value in given.items():
+        setattr(args, key, value)
+    assert resolve_mode(args) is cross
+
+
+@pytest.mark.parametrize("cross,given", [
+    (False, {"sequence": "Roundabout03", "sensor": "Ouster"}),
+    (True, {"db_sequence": "Roundabout01", "q_sequence": "Roundabout03",
+            "pair": "O-Aeva"}),
+])
+def test_run_builds_helipr_sources_in_both_modes(monkeypatch, cross, given):
+    """Both branches resolve their sources -- including the cross-session one.
+
+    That branch imported `parse_pair` from a module it no longer lives in, and
+    nothing noticed: every other test either stays single-session or builds a
+    DeploySpec directly, so the import was never executed.
+    """
+    from types import SimpleNamespace
+
+    from inlier.cli import cmd_run
+    from inlier.eval import datasets
+
+    built = []
+    monkeypatch.setattr(datasets, "HeLiPRSource",
+                        lambda *a, **k: built.append(a) or SimpleNamespace())
+
+    args = SimpleNamespace(
+        **{d: None for d in cmd_run.CROSS_DESTS + cmd_run.SINGLE_DESTS},
+        dataset_type="helipr", dataset="/data/HeLiPR")
+    for key, value in given.items():
+        setattr(args, key, value)
+
+    query, db = cmd_run._sources(args, cross, quiet=True)
+    assert query is not None
+    if not cross:
+        assert db is None
+        assert built == [("/data/HeLiPR", "Roundabout03", "Ouster")]
+    else:
+        # Query first, database second, and 'O-Aeva' is DB sensor then query.
+        assert built == [("/data/HeLiPR", "Roundabout03", "Aeva"),
+                         ("/data/HeLiPR", "Roundabout01", "Ouster")]
+
+
+def test_run_refuses_cross_session_kitti(capsys, tmp_path):
+    """Two KITTI sequences have two unrelated origins.
+
+    Each sequence's poses are `inv(Tr) @ P_i @ Tr` -- scan i in the velodyne
+    frame of *that sequence's* frame 0. Retrieval would still work, since no
+    stage reads a pose, which is what makes this worth refusing rather than
+    documenting: the odometry columns would compare positions in different
+    frames and look like ordinary numbers.
+    """
+    code, out = _run(capsys, "run", "--dataset-type", "kitti",
+                     "--dataset", str(tmp_path),
+                     "--db-sequence", "00", "--q-sequence", "05",
+                     "--threshold", "0.3")
+    assert code == 1
+    assert "no cross-session mode" in out.err
+    assert "--sequence" in out.err          # says what to do instead
+
+
+def test_run_refuses_a_mix_of_the_two_modes(capsys, tmp_path):
+    code, out = _run(capsys, "run", "--dataset-type", "generic",
+                     "--dataset", str(tmp_path), "--sequence", "a",
+                     "--db-sequence", "b", "--threshold", "0.3")
+    assert code == 1
+    assert "cannot mix the two modes" in out.err
+    assert "--sequence" in out.err and "--db-sequence" in out.err
+
+
+def test_run_requires_a_threshold(capsys, tmp_path):
+    code, out = _run(capsys, "run", "--dataset-type", "generic",
+                     "--dataset", str(tmp_path))
+    assert code == 1
+    assert "requires --threshold" in out.err
+    assert "inlier eval" in out.err          # says where to get one
+
+
+def test_run_rejects_a_threshold_policy(capsys, tmp_path):
+    """It exists on both sibling commands, so people will reach for it."""
+    code, out = _run(capsys, "run", "--dataset-type", "generic",
+                     "--dataset", str(tmp_path), "--threshold", "0.3",
+                     "--threshold-policy", "max_f1")
+    assert code == 1
+    assert "no --threshold-policy" in out.err
+
+
+def test_run_rejects_a_zero_threshold(capsys, tmp_path):
+    """A failed verification scores exactly 0.0."""
+    code, out = _run(capsys, "run", "--dataset-type", "generic",
+                     "--dataset", str(tmp_path), "--threshold", "0")
+    assert code == 1
+    assert "must be > 0" in out.err
+
+
+def test_run_search_radius_across_sessions_needs_a_transform(capsys, tmp_path):
+    code, out = _run(capsys, "run", "--dataset-type", "helipr",
+                     "--dataset", str(tmp_path), "--db-sequence", "a",
+                     "--q-sequence", "b", "--pair", "O-O",
+                     "--search-radius", "50", "--threshold", "0.3")
+    assert code == 1
+    assert "different world frame" in out.err

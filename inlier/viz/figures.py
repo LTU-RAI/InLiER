@@ -199,10 +199,15 @@ def _extent(*arrays_and_cap) -> float:
     return float(max(min(max(values) * 1.05, cap), 1e-3))
 
 
-def _draw_full(fig, ax, desc: Descriptors, cfg) -> None:
-    """(N_h, N_r*N_s) histogram, with the height ceiling marked."""
+def _draw_full(fig, ax, desc: Descriptors, cfg, vmin=None, vmax=None) -> None:
+    """(N_h, N_r*N_s) histogram, with the height ceiling marked.
+
+    ``vmin``/``vmax`` pin the colour scale.  ``inlier match`` draws two of
+    these side by side and passes one scale to both, so a difference in
+    brightness means a difference in the descriptors rather than in autoscaling.
+    """
     image = ax.imshow(desc.full, aspect="auto", origin="lower", cmap="viridis",
-                      interpolation="nearest")
+                      interpolation="nearest", vmin=vmin, vmax=vmax)
     ceiling = ""
     if 0 <= desc.max_hb < cfg.N_h - 1:
         ax.axhline(desc.max_hb + 0.5, color=CEILING_COLOR, lw=1.5)
@@ -215,10 +220,13 @@ def _draw_full(fig, ax, desc: Descriptors, cfg) -> None:
     fig.colorbar(image, ax=ax, fraction=0.012, pad=0.008).set_label("tokens")
 
 
-def _draw_mint(ax, desc: Descriptors, cfg) -> None:
-    """The row stage 1 scores, after collapsing height."""
+def _draw_mint(ax, desc: Descriptors, cfg, vmin=None, vmax=None) -> None:
+    """The row stage 1 scores, after collapsing height.
+
+    ``vmin``/``vmax`` as in :func:`_draw_full`.
+    """
     ax.imshow(desc.compact[None, :], aspect="auto", origin="lower",
-              cmap="viridis", interpolation="nearest")
+              cmap="viridis", interpolation="nearest", vmin=vmin, vmax=vmax)
     _bin_ticks(ax, cfg)
     ax.set_yticks([])
     ax.set_xlabel(f"$r_b$  -- each tick is one radial bin of $N_s$={cfg.N_s} "

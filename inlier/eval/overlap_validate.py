@@ -116,20 +116,8 @@ def load_scan_global_voxelized_helipr(handler, bin_files, sensor, poses,
 
 
 # ---------------------------------------------------------------------------
-#  Generic dataset loading (.pcd + poses_kitti.txt)
+#  Generic dataset loading (scans + a KITTI or TUM pose file)
 # ---------------------------------------------------------------------------
-
-def _load_kitti_poses(poses_file: Path) -> list:
-    poses = []
-    with open(poses_file) as f:
-        for line in f:
-            vals = list(map(float, line.strip().split()))
-            if len(vals) == 12:
-                T = np.eye(4)
-                T[:3, :] = np.array(vals).reshape(3, 4)
-                poses.append(T)
-    return poses
-
 
 def group_into_submaps(positions, poses, files, n, stride=None):
     """Group K consecutive scans into submaps of size n, stepping by `stride`.
@@ -156,15 +144,24 @@ def group_into_submaps(positions, poses, files, n, stride=None):
     return np.asarray(kf_positions), submap_poses, submap_files
 
 
-def load_generic_sequence(seq_path: Path, inter_transform=None):
+def load_generic_sequence(seq_path: Path, inter_transform=None,
+                          scans_dir=None, pose_file=None):
     """Load poses and scan file list for a generic dataset.
 
     inter_transform – 4x4 that maps this sequence's frame into the reference
                       frame; None means this sequence is the reference.
+    scans_dir /
+    pose_file      – explicit paths, overriding the conventional layout.
+
+    Shares ``Generic_Handler`` with the build and the evaluation, so a matrix
+    is validated against exactly the poses and scans it was built from.
     Returns positions (K,3), effective_poses (list of 4x4), scan_files.
     """
-    poses = _load_kitti_poses(seq_path / "poses_kitti.txt")
-    scan_files = sorted((seq_path / "scans").glob("*.pcd"))
+    from inlier.eval.datasets.generic import Generic_Handler
+
+    handler = Generic_Handler(verbose=False, scans_dir=scans_dir, pose_file=pose_file)
+    poses, _ = handler.load_poses(seq_path)
+    scan_files = handler.list_scan_files(seq_path)
 
     if len(scan_files) != len(poses):
         raise ValueError(
@@ -197,11 +194,17 @@ def _gicp_refine(db_pts, q_pts, voxel_size, max_dist):
 
 
 def load_scan_global_voxelized_pcd(pcd_files, poses, voxel_size, max_range):
-    """Generic: accumulate N .pcd → range filter → global frame → voxelize."""
+    """Generic: accumulate N scans → range filter → global frame → voxelize.
+
+    Reads through ``Generic_Handler``, so ``.pcd`` and ``.bin`` both work and
+    the point filtering matches what the build and the evaluation do.
+    """
+    from inlier.eval.datasets.generic import Generic_Handler
+
+    handler = Generic_Handler(verbose=False)
     all_pts = []
     for pcd_file, pose in zip(pcd_files, poses):
-        cloud = o3d.io.read_point_cloud(str(pcd_file))
-        pts = np.asarray(cloud.points, dtype=np.float64)
+        pts = handler.load_scan_file(pcd_file).astype(np.float64)
         if max_range > 0 and pts.shape[0] > 0:
             r = np.linalg.norm(pts, axis=1)
             pts = pts[r <= max_range]
@@ -486,6 +489,22 @@ def main(argv=None):
                         help="DB dataset directory (scans/ + poses_kitti.txt).")
     generic.add_argument("--q-path", type=str,
                         help="Q dataset directory (scans/ + poses_kitti.txt).")
+    generic.add_argument("--db-scans", dest="db_scans_dir", type=str,
+                         default=None, metavar="DIR",
+                         help="Directory holding the DB scan files (.pcd or "
+                              ".bin); overrides <db_path>/scans.")
+    generic.add_argument("--db-poses", dest="db_pose_file", type=str,
+                         default=None, metavar="FILE",
+                         help="DB pose file, KITTI (12 values) or TUM (8), "
+                              "detected by its contents.")
+    generic.add_argument("--q-scans", dest="q_scans_dir", type=str,
+                         default=None, metavar="DIR",
+                         help="Directory holding the Q scan files (.pcd or "
+                              ".bin); overrides <q_path>/scans.")
+    generic.add_argument("--q-poses", dest="q_pose_file", type=str,
+                         default=None, metavar="FILE",
+                         help="Q pose file, KITTI (12 values) or TUM (8), "
+                              "detected by its contents.")
     generic.add_argument(
         "--transform", type=str, default=None,
         help="4x4 transform.txt mapping DB frame → Q frame. "
@@ -593,11 +612,20 @@ def main(argv=None):
 
     # ---- generic mode -------------------------------------------------------
     else:
-        if not args.db_path or not args.q_path:
-            parser.error("--db-path and --q-path are required for --dataset-type generic")
+        # Mirrors overlap_build: a sequence is named by its directory or by
+        # --*-scans, and the directory still names the matrix being validated.
+        if not args.db_path and not args.db_scans_dir:
+            parser.error("--dataset-type generic needs --db-path or --db-scans")
+        if not args.q_path and not args.q_scans_dir:
+            parser.error("--dataset-type generic needs --q-path or --q-scans")
+        for side in ("db", "q"):
+            if (not getattr(args, f"{side}_path")
+                    and not getattr(args, f"{side}_pose_file")):
+                parser.error(f"--{side}-scans without --{side}-path also needs "
+                             f"--{side}-poses")
 
-        db_path = Path(args.db_path)
-        q_path = Path(args.q_path)
+        db_path = Path(args.db_path) if args.db_path else Path(args.db_scans_dir).parent
+        q_path = Path(args.q_path) if args.q_path else Path(args.q_scans_dir).parent
 
         transform_path = args.transform
         if transform_path is None:
@@ -627,9 +655,10 @@ def main(argv=None):
 
         print("Loading DB poses ...")
         db_pos_raw, db_poses_raw, db_files_raw = load_generic_sequence(
-            db_path, inter_transform)
+            db_path, inter_transform, args.db_scans_dir, args.db_pose_file)
         print("Loading Q poses ...")
-        q_pos_raw, q_poses_raw, q_files_raw = load_generic_sequence(q_path, None)
+        q_pos_raw, q_poses_raw, q_files_raw = load_generic_sequence(
+            q_path, None, args.q_scans_dir, args.q_pose_file)
 
         _, db_poses, db_files = group_into_submaps(
             db_pos_raw, db_poses_raw, db_files_raw, args.n_db, stride=eff_sdb)

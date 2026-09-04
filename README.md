@@ -36,6 +36,8 @@ The pipeline re-organizes one token vocabulary across three stages:
 
 ## 📰 Latest News
 
+- **[2026-09-04]** 👁️ **Live viewer** — `inlier run --live` streams the session frame by frame in a 3D window (map, keypoints, trajectory nodes, loop closure edges, descriptors and per-stage timings), built on [**Iridescence**](https://github.com/koide3/iridescence) — the OpenGL viewer behind [GLIM](https://github.com/koide3/glim) — through its [`pyridescence`](https://pypi.org/project/pyridescence/) bindings. Requires the new `[viz]` extra. See [Command Line](docs/cli.md#watching-it-run----live).
+- **[2026-09-03]** 🧰 **New commands, and KITTI** — [`inlier eval online-lcd`](docs/cli.md#online-loop-closure-detection) scores a single session causally, against a database that grows as it goes; [`inlier run`](docs/cli.md#producing-loop-closures) drops the labels entirely and emits loop closures with their 6-DoF constraints for data with no ground truth; and [`inlier match`](docs/cli.md#matching-two-encodings) scores two encodings against each other stage by stage, for when you want to know why a particular pair did or did not match. Alongside them, we added support for [`--dataset-type kitti`](docs/custom-data.md#kitti-odometry) which reads the KITTI odometry benchmark directly, applying the camera->velodyne correction its ground-truth poses need. See [Command Line](docs/cli.md).
 - **[2026-09-02]** 🏷️ **v1.0.0** — the `inlier` command line (`doctor`, `config`, `encode`, `gt`, `eval`, `play`, `bench`), a layered YAML configuration, and a full documentation set under [`docs/`](docs).
 - **[2026-09-01]** ⚡ The **C++ core** is out — the encoder, MINT/BEAM matcher, and token-guided verification are now C++17 with pybind11 bindings, behind the same Python API. Up to **39× faster verification** and **2.1× end-to-end** on the HeLiPR benchmark; see [C++ Core](docs/cpp-core.md).
 - **[2026-08-13]** 📄 The **published RA-L version** is out — IEEE Robotics and Automation Letters, vol. 11, no. 10, pp. 11275–11282, [10.1109/LRA.2026.3723737](https://doi.org/10.1109/LRA.2026.3723737).
@@ -52,7 +54,7 @@ cd InLiER
 pip install -e ".[eval]"
 
 python3 -c "import inlier; from inlier.core.InLiER import _BACKEND; print(inlier.__version__, _BACKEND)"
-# 1.0.0 cpp
+# 1.1.0 cpp
 ```
 
 ### As a library
@@ -145,7 +147,7 @@ Step 3 writes the Recall/PR-AUC metrics (`results_*.json`), the loop-closure can
 |---|---|
 | [Installation](docs/installation.md) | prerequisites, conda/venv setup, extras, verifying the build |
 | [Python API](docs/python-api.md) | using InLiER as a library |
-| [Command Line](docs/cli.md) | every `inlier` subcommand, descriptor inspection, submaps |
+| [Command Line](docs/cli.md) | every `inlier` subcommand, descriptor inspection, submaps, the live viewer |
 | [Configuration](docs/configuration.md) | config layering, every `--set` key, and the parameter tables |
 | [C++ Core](docs/cpp-core.md) | backend selection, benchmarks, equivalence tests |
 | [HeLiPR Benchmark](docs/helipr-benchmark.md) | reproduce the paper's results end to end |
@@ -154,7 +156,6 @@ Step 3 writes the Recall/PR-AUC metrics (`results_*.json`), the loop-closure can
 
 ## 🔜 Roadmap
 
-- 🔁 More evaluation protocols — `online-lcd`, `online-global`, `multi-session`, and a GT-free `inlier run`.
 - 🤖 ROS2 nodes for front-end agnostic loop closures, with a GTSAM based back-end.
 - 🧩 Planned integrations with KISS-ICP, FAST-LIO2 and GLIM, so InLiER can plug into the odometry front-end you already run.
 
@@ -164,7 +165,7 @@ Details in [docs/roadmap.md](docs/roadmap.md).
 
 We thank the authors of [**HeLiPR**](https://sites.google.com/view/heliprdataset) and [**HeLiOS**](https://github.com/minwoo0611/HeLiOS) for their open dataset and tooling, which form the base of our benchmarking ( [**HeLiPR-Pointcloud-Toolbox**](https://github.com/minwoo0611/HeLiPR-Pointcloud-Toolbox), [**HeLiPR-Place-Recognition**](https://github.com/minwoo0611/HeLiPR-Place-Recognition)).
 
-We also thank Koide *et al.* ([@koide3](https://github.com/koide3)) for [`small_gicp`](https://github.com/koide3/small_gicp), which is used throughout our evaluation pipeline and the 6-DoF refinement step.
+We also thank Koide *et al.* ([@koide3](https://github.com/koide3)) for [`small_gicp`](https://github.com/koide3/small_gicp), which is used throughout our evaluation pipeline and the 6-DoF refinement step, and for [**Iridescence**](https://github.com/koide3/iridescence), the viewer that `inlier run --live` draws into.
 
 ## 📝 Citation
 

@@ -2,6 +2,14 @@
 C++ vs the Python implementation, on REAL cached descriptors
 (cache_inlier/*.npz).
 
+The numpy side is ``inlier.core.reference.InLiER_Matcher``, imported
+explicitly and never ``inlier.core.InLiER_Matcher``: with the extension built,
+every stage method on the latter is a C++ override, so pairing it against
+``ip._Matcher`` compares the core against itself and cannot fail. Measured on
+this fixture, those two agree bit-for-bit while the reference differs by ~6e-8
+on MINT (float32 accumulation) and not at all on BEAM or rerank — which is the
+signal the tolerances below are actually sized for.
+
 Shortlist/rerank scores use float32 accumulation in Python, double in
 C++, so comparisons are allclose(rtol=1e-5). BEAM is pure integer
 popcount Jaccard, so it's compared bit-exact. Ranking ties may legally
@@ -24,6 +32,9 @@ from inlier.core.Dataclasses import (
     ShortlistConfig,
 )
 from inlier.core.InLiER_Matcher import InLiER_Matcher
+from inlier.core.reference.InLiER_Matcher import (
+    InLiER_Matcher as ReferenceMatcher,
+)
 
 N_DB = 60      # scans loaded into the matcher
 N_QUERY = 8    # queries evaluated per stage
@@ -52,7 +63,7 @@ def db_and_queries(cached_descriptors):
 def matchers(db_and_queries):
     db, _ = db_and_queries
     py_cfg = InLiER_Config()
-    py_m = InLiER_Matcher(
+    py_m = ReferenceMatcher(
         inlier_config=py_cfg,
         shortlist_config=ShortlistConfig(**SL_KW),
         beam_score_config=BEAMScoreConfig(**BEAM_KW),
@@ -94,8 +105,9 @@ def test_add_errors(db_and_queries):
     with pytest.raises(Exception, match="already exists"):
         cpp_m.add(0, db[1].astype(np.uint64))
     cpp_m.finalize()
-    with pytest.raises(Exception, match="finalized"):
-        cpp_m.add(1, db[1].astype(np.uint64))
+    ## add after finalize is legal (incremental DB) and re-opens the matcher
+    cpp_m.add(1, db[1].astype(np.uint64))
+    assert len(cpp_m) == 2 and not cpp_m.finalized
     cpp_m.reset()
     assert len(cpp_m) == 0
     cpp_m.add(1, db[1].astype(np.uint64))  # works again after reset
@@ -273,3 +285,144 @@ def test_rerank_matches(db_and_queries, matchers, scoring_mode, spatial_tol):
             np.testing.assert_allclose(cr, pr, atol=0)
             np.testing.assert_allclose(ch, ph, rtol=1e-5, atol=1e-7)
             np.testing.assert_allclose(cs, ps, rtol=1e-5, atol=1e-7)
+
+
+## --- Phase 2.1: incremental database ---
+##
+## The DB-build path feeds shortlist (via the stacked histogram matrix) and
+## beam/rerank (via get_scan_data).  verify() takes its tokens and keypoints
+## as explicit arguments and never reads the DB store, so it cannot observe
+## how the database was built and is not re-tested here.
+
+MATCHER_CLASSES = [
+    pytest.param(InLiER_Matcher, id="cpp"),
+    pytest.param(ReferenceMatcher, id="numpy"),
+]
+
+
+def _new_matcher(cls):
+    return cls(
+        inlier_config=InLiER_Config(),
+        shortlist_config=ShortlistConfig(**SL_KW),
+        beam_score_config=BEAMScoreConfig(**BEAM_KW),
+        rerank_config=RerankConfig(),
+    )
+
+
+def _fill(m, scans):
+    for i, tid in enumerate(scans):
+        m.add(i, InLiER_Tokens(token_id=tid))
+    m.finalize(verbose=False)
+    return m
+
+
+def _stages(m, q, k):
+    """shortlist → beam → rerank for one query."""
+    sl = m.shortlist(InLiER_Tokens(token_id=q), topk=k, verbose=False)
+    beam = m.beam_score(InLiER_Tokens(token_id=q), sl.ids,
+                        topk=len(sl.ids), verbose=False)
+    rr = m.rerank(InLiER_Tokens(token_id=q), beam.ids, beam.best_shifts,
+                  topk=len(beam.ids), verbose=False)
+    return sl, beam, rr
+
+
+def _assert_stages_identical(a, b):
+    """Exact, not allclose: same backend, same arithmetic, same order."""
+    (sl_a, beam_a, rr_a), (sl_b, beam_b, rr_b) = a, b
+    assert sl_a.ids == sl_b.ids and sl_a.scores == sl_b.scores
+    assert beam_a.ids == beam_b.ids and beam_a.scores == beam_b.scores
+    assert beam_a.best_shifts == beam_b.best_shifts
+    assert rr_a.ids == rr_b.ids and rr_a.scores == rr_b.scores
+    assert rr_a.inlier_counts == rr_b.inlier_counts
+
+
+@pytest.mark.parametrize("cls", MATCHER_CLASSES)
+def test_incremental_add_matches_bulk(db_and_queries, cls):
+    """finalize() after every add == one finalize() over the whole DB."""
+    db, queries = db_and_queries
+
+    inc = _new_matcher(cls)
+    for i, tid in enumerate(db):
+        inc.add(i, InLiER_Tokens(token_id=tid))
+        inc.finalize(verbose=False)      # appends exactly one row each time
+    assert len(inc) == len(db)
+
+    bulk = _new_matcher(cls)
+    bulk.reset()                         # the plan's stated baseline
+    _fill(bulk, db)
+
+    np.testing.assert_array_equal(inc.db_ids, bulk.db_ids)
+    for i in (0, len(db) // 2, len(db) - 1):
+        a, b = inc.get_scan_data(i), bulk.get_scan_data(i)
+        for key in ("hb", "rb", "sb", "ab", "token_id"):
+            np.testing.assert_array_equal(a[key], b[key])
+        assert a["max_active_hb"] == b["max_active_hb"]
+
+    for q in queries[:4]:
+        _assert_stages_identical(_stages(inc, q, len(db)),
+                                 _stages(bulk, q, len(db)))
+
+
+@pytest.mark.parametrize("cls", MATCHER_CLASSES)
+@pytest.mark.parametrize("k", [1, 7, N_DB // 2, N_DB])
+def test_shortlist_max_db_index_equals_prefix_db(db_and_queries, cls, k):
+    """A bounded search == the same search on a DB of only those scans."""
+    db, queries = db_and_queries
+    full = _fill(_new_matcher(cls), db)
+    prefix = _fill(_new_matcher(cls), db[:k])
+
+    for q in queries[:3]:
+        tok = InLiER_Tokens(token_id=q)
+        got = full.shortlist(tok, topk=k, verbose=False, max_db_index=k)
+        want = prefix.shortlist(tok, topk=k, verbose=False)
+        assert got.ids == want.ids and got.scores == want.scores
+        assert all(i < k for i in got.ids)
+
+        ## topk_pct must resolve against the *bounded* database, not the
+        ## full one -- otherwise an online run silently returns k/2 more
+        ## candidates than the same offline run over the same scans.
+        got = full.shortlist(tok, topk_pct=0.5, verbose=False, max_db_index=k)
+        want = prefix.shortlist(tok, topk_pct=0.5, verbose=False)
+        assert got.ids == want.ids and got.scores == want.scores
+
+
+def test_max_db_index_edges(matchers, db_and_queries):
+    _, cpp_m = matchers
+    _, queries = db_and_queries
+    q = queries[0].astype(np.uint64)
+    cfg = bridge.to_cpp_stage_config(ip.ShortlistConfig,
+                                     ShortlistConfig(**SL_KW))
+
+    assert cpp_m.shortlist(q, cfg, topk=5, max_db_index=0).ids == []
+
+    unbounded = cpp_m.shortlist(q, cfg, topk=N_DB)
+    for bound in (N_DB, 10 ** 6, -1):    # clamped, over-sized, "no bound"
+        out = cpp_m.shortlist(q, cfg, topk=N_DB, max_db_index=bound)
+        assert list(out.ids) == list(unbounded.ids)
+        assert list(out.scores) == list(unbounded.scores)
+
+
+def test_reserve_does_not_change_results(db_and_queries):
+    """reserve() is pure pre-allocation: identical scores, no reallocation."""
+    db, queries = db_and_queries
+    cfg = bridge.to_cpp_inlier_config(InLiER_Config())
+    sl_cfg = bridge.to_cpp_stage_config(ip.ShortlistConfig,
+                                        ShortlistConfig(**SL_KW))
+
+    reserved = ip._Matcher(cfg)
+    reserved.reserve(len(db))
+    plain = ip._Matcher(cfg)
+    for i, tid in enumerate(db):
+        reserved.add(i, tid.astype(np.uint64))
+        reserved.finalize()              # the online, one-row-at-a-time path
+        plain.add(i, tid.astype(np.uint64))
+    plain.finalize()
+
+    k = N_DB // 3
+    for q in queries[:3]:
+        qq = q.astype(np.uint64)
+        a = reserved.shortlist(qq, sl_cfg, topk=k, max_db_index=k)
+        b = plain.shortlist(qq, sl_cfg, topk=k, max_db_index=k)
+        assert list(a.ids) == list(b.ids)
+        assert list(a.scores) == list(b.scores)
+        assert max(a.ids) < k

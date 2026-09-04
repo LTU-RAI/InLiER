@@ -118,6 +118,30 @@ def user_path(value: str) -> Path:
     return Path(os.path.expandvars(os.path.expanduser(value)))
 
 
+def add_generic_layout_flags(group, prefix: str = "", label: str = "") -> None:
+    """``--scans``/``--poses`` (optionally prefixed) on a generic-dataset group.
+
+    The conventional layout -- ``<dataset>/scans/`` beside ``poses_kitti.txt``
+    -- is a convenience the loader offers, not something a dataset owes anyone.
+    These name the two paths directly, and either may be given alone.
+
+    ``prefix`` distinguishes the two sequences of a cross-session run
+    (``db``/``q``); ``label`` is what the help text calls them.
+    """
+    dash = f"--{prefix}-" if prefix else "--"
+    dest = f"{prefix}_" if prefix else ""
+    what = f"{label} " if label else ""
+    group.add_argument(f"{dash}scans", dest=f"{dest}scans_dir", type=user_path,
+                       default=None, metavar="DIR",
+                       help=f"directory holding the {what}scan files (.pcd or "
+                            f".bin); overrides <dataset>/scans")
+    group.add_argument(f"{dash}poses", dest=f"{dest}pose_file", type=user_path,
+                       default=None, metavar="FILE",
+                       help=f"{what}pose file, KITTI (12 values) or TUM (8), "
+                            f"detected by its contents; overrides "
+                            f"<dataset>/poses_*.txt")
+
+
 # `--opt=~/x` only; a bare `~/x` is handled separately, and `--opt ~/x` was
 # already expanded by the shell before argv was built.
 _OPT_WITH_TILDE = re.compile(r"^(--[A-Za-z0-9][\w-]*)=(~.*)$")

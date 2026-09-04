@@ -13,8 +13,12 @@ inlier --help
 | `inlier doctor` | check the backend, dependencies, dataset layout, and ground-truth consistency |
 | `inlier config show` \| `dump` | print the effective configuration — after merging defaults, `--config`, and `--set` |
 | `inlier encode` | run just the encoder on a scan or a directory, writing keypoints + tokens, and optionally plotting them |
+| `inlier match` | score two encodings against each other, with the stage-by-stage figure |
 | `inlier gt build` \| `validate` | build or sanity-check the overlap ground truth |
-| `inlier eval cross-session` | run the evaluation protocol |
+| `inlier eval cross-session` | offline: full database vs full query sequence |
+| `inlier eval online-lcd` | online: one session, a growing database, causal matching |
+| `inlier run` | loop closures and 6-DoF poses on data with **no ground truth** — add `--live` to watch it frame by frame |
+| | (`helipr`, `generic` or `kitti` data — see [Your Own Data](custom-data.md)) |
 | `inlier play` | replay a finished run as an animation |
 | `inlier bench cpp-vs-py` | time the C++ core against the numpy reference |
 
@@ -129,6 +133,46 @@ token radices. (Matching the GT is the evaluation's own constraint — see
 > (`HeLiPRSource` carries no `n_scans`/`stride`, and the published results are
 > one submap per scan). Point `inlier encode` straight at a `.bin`.
 
+## Matching Two Encodings
+
+`inlier match` takes two `.npz` files from `inlier encode` and runs the
+matching stages on that pair alone:
+
+```bash
+inlier match a.npz b.npz                       # print what each stage scored
+inlier match a.npz b.npz --viz                 # and plot the comparison
+inlier match a.npz b.npz --viz-save cmp.png    # write the figure instead
+inlier match a.npz b.npz -o scores.json        # machine-readable scores
+```
+
+The flags are `inlier encode`'s: `-o` is the data output, `--viz` opens a
+window and `--viz-save` writes the figure (`--viz-dpi` sets its resolution).
+Only the data format differs — there is no `.npz` to write here, so `-o`
+carries the scores. Pointing `-o` at an image is an error naming `--viz-save`,
+rather than JSON quietly written under a `.png` name.
+
+```text
+  stage 1  MINT   0.660061   (L1-normalised histogram intersection (compact))
+  stage 2  BEAM   0.131640   (azimuth shift 0)
+  verify          0.075488   (85/1126 keypoint inliers, 44/186 RANSAC)
+
+  VERIFIED
+    yaw +0.041 deg   t = [-0.475, +0.826, -0.053] m   RMSE 0.6476 m
+    GICP on raw clouds: converged in 9 iters, 86862 inliers, error 56291.9572
+```
+
+`--viz` draws those same numbers with the geometry and the descriptors behind
+them, both scans side by side:
+
+<p align=center>
+  <img src="../figures/cmp.png" alt="inlier match --viz figure for a heterogeneous pair" width="80%"/>
+</p>
+
+<p align=center><sub>Top row: each scan with its keypoints, then the query
+transformed onto the database by the verified pose. Below it the same three
+matrices for both sides -- <code>H</code>, <code>R</code>, <code>A</code> -- and
+the stage scores with what each one measured.</sub></p>
+
 ## Building the Ground Truth
 
 `inlier gt build` precomputes the pairwise overlap matrices that label true and
@@ -202,7 +246,7 @@ inlier eval cross-session --dataset-type generic \
 |---|---|
 | loader | `--dataset-type {helipr,generic}` (default: `helipr`) |
 | helipr | `--dataset`, `--db-sequence`, `--q-sequence`, `--pair`, `--overlap-dir` |
-| generic | `--db-path`, `--q-path`, `--overlap-file`, `--n-db`, `--n-q`, `--stride-db`, `--stride-q`, `--transform`, `--no-transform` |
+| generic | `--db-path`, `--q-path`, `--db-scans`, `--db-poses`, `--q-scans`, `--q-poses`, `--overlap-file`, `--n-db`, `--n-q`, `--stride-db`, `--stride-q`, `--transform`, `--no-transform` |
 | ground truth | `--overlap-threshold` (default: 0.3), `--max-pose-dist` (default: 25.0, `0` disables), `--no-strict-gt-check` |
 | output | `-o/--output-dir` (default: `results`), `--cache-dir` (default: `cache_inlier`, `''` disables), `--threshold-policy {max_precision,max_f1,fixed}`, `--threshold` |
 
@@ -212,6 +256,81 @@ implies `fixed`. A parameter mismatch between the overlap matrix's
 is an error — `--no-strict-gt-check` downgrades it to a warning. The encoder
 and retrieval parameters come from `--config`; see
 [Configuration](configuration.md).
+
+### Online loop closure detection
+
+`inlier eval online-lcd` is the SLAM protocol: one session, no second sequence
+and no overlap matrix. The database grows as the session streams, and frame
+`t` may only match frames older than the exclusion window.
+
+```bash
+inlier eval online-lcd --dataset /data/HeLiPR \
+    --sequence Roundabout01 --sensor Ouster \
+    --exclusion frames=100 --max-pose-dist 10.0 -o results/lcd
+```
+
+| group | flags |
+|---|---|
+| loader | `--dataset-type {helipr,kitti,generic}` (default: `helipr`) |
+| path | `--dataset` — the HeLiPR root, or the KITTI root, or the sequence directory under `--dataset-type generic` |
+| helipr | `--sequence`, `--sensor` |
+| kitti | `--sequence` (e.g. `00`; droppable when `--dataset` is itself a sequence directory), `--n-scans`, `--stride`. `--scans`/`--poses`/`--sensor` are refused — the layout supplies all three |
+| generic | `--scans DIR`, `--poses FILE` (override `<dataset>/scans` and `<dataset>/poses_*.txt`; both together replace `--dataset`), `--n-scans`, `--stride` |
+| ground truth | `--exclusion` (default: `frames=100`), `--max-pose-dist` (default: 10.0), `--search-radius` (default: 0) |
+| output | `-o/--output-dir` (default: `results`), `--cache-dir` (default: `cache_inlier`, `''` disables), `--threshold-policy {max_precision,max_f1,fixed}` (default: `max_precision`), `--threshold` (implies `fixed`) |
+| common | `-c/--config`, `--set KEY=VALUE`, `--backend {auto,cpp,python}`, `-q/--quiet` — as everywhere |
+
+`--exclusion` carries its unit — `frames=N`, `seconds=S` or `metres=M` — because
+the three are not interchangeable: 100 frames is a different window at 1 Hz
+than at 10 Hz, and neither is 50 m. The same window computes the ground-truth
+cutoff *and* the matcher's database bound, so the two cannot drift apart. The
+bound is applied inside the scoring loop rather than by discarding results
+afterwards, which is what stops an excluded neighbour from crowding a real
+loop closure out of the top-k.
+
+`seconds=` is the one unit that costs extra: the descriptor cache stores poses
+but not timestamps, so that window alone re-reads the sequence.
+
+Ground truth is pose distance alone, since there is no overlap matrix for a
+single session. Results are reported the way loop closure is scored — `f1_max`
+and max recall at 100% precision, in a `loop_closure` block — alongside a
+`latency` block whose per-frame timings cover the query *and* the insertion,
+and are meaningful because the database really does grow one frame at a time.
+
+With `--dataset-type generic`, `--scans DIR` and `--poses FILE` name the two
+paths directly when the data is not laid out as `<dataset>/scans` beside
+`poses_kitti.txt`, and `.bin` scans are read alongside `.pcd`. See
+[Test Your Own Data](custom-data.md#if-your-data-isnt-laid-out-that-way).
+
+`--dataset-type kitti` reads the KITTI odometry benchmark, with `--sequence 00`.
+Use it rather than `generic` for KITTI: its ground-truth poses are in the camera
+frame and need the calibration applied, which the generic loader cannot know
+about. See [KITTI Odometry](custom-data.md#kitti-odometry).
+
+### Search radius
+
+A SLAM front-end usually matches against a local map rather than every frame it
+has ever seen. `--search-radius R` reproduces that: candidates are restricted to
+database frames within `R` metres of the query. `0` — the default — searches the
+whole causal past.
+
+> ⚠️ **This is a geometric oracle.** The radius is measured against the query's
+> *ground-truth* pose, which a deployed system does not have, and it deletes
+> exactly the far-away distractors that make retrieval hard. Every metric goes
+> up. Runs that use it are flagged in the results JSON as
+> `candidate_filter.uses_pose_oracle: true`, so a number produced with a radius
+> can never be mistaken for one produced without.
+
+A radius smaller than `--max-pose-dist` is rejected: it would place real
+revisits outside the searchable database, and the resulting recall loss would
+read as a retrieval failure rather than the misconfiguration it is.
+
+The filter is applied to the retrieved ranking rather than inside the matcher's
+scoring loop — a radius keeps scattered indices, not a contiguous prefix, so the
+matcher's bound cannot express it. That is still *exact*, because the stage
+scores the entire causal set before anything is dropped; what it does mean is
+that the reported `latency` over-states a radius run, since the search itself
+still scans every causal frame.
 
 ## Replaying a Run
 
@@ -239,6 +358,169 @@ points at the scans if they moved since the run; `--results-json` pins one
 result file when a directory holds several; `--candidates-csv`,
 `--verify-csv`, `--db-cache`, `--q-cache` skip auto-discovery. Apart from
 `--record`, playback writes nothing.
+
+### Density, and why it is the speed knob
+
+Everything drawn is a voxel downsample of an accumulated submap, and at
+`--n-scans 40` one submap is around a million points. Thinning it is the whole
+per-frame cost, so these three flags trade detail against speed directly:
+
+| flag | default | effect |
+|---|---|---|
+| `--q-voxel-size` | 1.0 | voxel size (m) for the per-keyframe scans; larger is coarser and faster, `0` disables downsampling |
+| `--db-voxel-size` | 1.0 | same, for database scans — the prior map and the matched frame in the panel |
+| `--db-map-stride` | 50 | build the prior map from every Nth keyframe. Ignored by single-session runs, which have no prior map |
+
+```bash
+# faster, coarser: good for scrubbing a long session
+inlier play --run-dir results/lcd/... --q-voxel-size 2.0 --db-voxel-size 2.0
+
+# denser map for a final render, at a longer stride to keep it affordable
+inlier play --run-dir results/HeLiPR/... --db-voxel-size 0.5 --db-map-stride 20 \
+    --record loops.mp4
+```
+
+The values are echoed in the header the command prints, so a recording says
+what it was rendered at.
+
+Both protocols replay with the same command — the run's JSON says which it is,
+so nothing has to be passed. A cross-session run stacks its two sessions:
+database below, query above, every edge crossing the gap.
+
+An **online-lcd** run has one session and one map, so the two axes carry
+different meanings instead:
+
+- **The map lies flat on the floor** and builds up as the session plays, which
+  is what an online run actually has. Nothing is painted there in advance —
+  the finished map would show frames the matcher had not reached yet, the
+  future leak the protocol exists to avoid.
+- **The trajectory sits above it with `z` as the frame index**, so the curve
+  climbs as the run proceeds and a closure edge joins two points *on that
+  curve*. The height an edge spans is how long the loop took to come back
+  around — the same reading as the static `trajectory_*.png`. The index is
+  scaled into the plot's z range, so only the ordering and the proportions
+  are meaningful; the axis itself is not drawn.
+
+## Producing Loop Closures
+
+`inlier eval` answers "how good is this?", which needs labels. A deployment has
+none — it has scans, a drifting odometry estimate, and one question: which
+frames close a loop, and what is the constraint between them. `inlier run` is
+that command.
+
+```bash
+# single session: streams causally against its own past
+inlier run --dataset-type kitti --dataset /data/kitti --sequence 00 \
+    --n-scans 10 --exclusion seconds=30 --threshold 0.35 -o results/run
+
+inlier run --dataset-type helipr --dataset /data/HeLiPR \
+    --sequence Roundabout03 --sensor Ouster \
+    --exclusion seconds=30 --threshold 0.35 -o results/run
+
+inlier run --dataset-type generic --dataset /data/campus \
+    --n-scans 40 --exclusion metres=50 --threshold 0.35 -o results/run
+
+# ...or name the two paths, when the data is laid out some other way
+inlier run --dataset-type generic \
+    --scans /data/campus/clouds --poses /data/campus/traj_tum.txt \
+    --n-scans 40 --exclusion metres=50 --threshold 0.35 -o results/run
+
+# cross session: queries a fixed prior map
+inlier run --dataset-type helipr --dataset /data/HeLiPR \
+    --db-sequence Roundabout01 --q-sequence Roundabout03 --pair O-Aeva \
+    --threshold 0.35 -o results/run
+
+inlier run --dataset-type generic \
+    --db-path /data/campus/db --q-path /data/campus/q --n-db 40 --n-q 40 \
+    --threshold 0.35 -o results/run
+```
+
+| group | flags |
+|---|---|
+| loader | `--dataset-type {helipr,kitti,generic}` (default: `helipr`) — `kitti` is single-session only |
+| path | `--dataset` — the HeLiPR root, the KITTI odometry root or one sequence directory, or the generic sequence directory |
+| single, helipr | `--sequence`, `--sensor` |
+| single, kitti | `--sequence` (e.g. `00`), `--n-scans`, `--stride` |
+| single, generic | `--scans DIR`, `--poses FILE`, `--n-scans`, `--stride` |
+| single, all | `--exclusion` (default: `frames=100`) — how much recent past a frame may not match |
+| cross, helipr | `--db-sequence`, `--q-sequence`, `--pair` (e.g. `O-Aeva`) |
+| cross, generic | `--db-path`, `--q-path`, `--db-scans`, `--db-poses`, `--q-scans`, `--q-poses`, `--transform`, `--no-transform` |
+| cross, all | `--n-db`, `--n-q`, `--stride-db`, `--stride-q` — submap accumulation per session, ignored by HeLiPR |
+| scope | `--search-radius` (default: 0 — search everything), measured on **odometry**, not ground truth |
+| output | `--threshold` (**required**), `-o/--output-dir`, `--cache-dir`, `--top-k` (default: 20), `--no-score-matrices`, `--live` |
+
+The path flags behave as they do for
+[online-lcd](#online-loop-closure-detection): `--scans`/`--poses` override the
+conventional `<dataset>/scans` and `<dataset>/poses_*.txt` and may replace
+`--dataset` when both are given, `--n-scans`/`--stride` are ignored by HeLiPR,
+and `--dataset-type kitti` refuses `--scans`, `--poses` and `--sensor` because
+the KITTI layout supplies all three. Cross-session, the same flags carry a
+`--db-`/`--q-` prefix, one per session.
+
+`--transform` maps the prior map's world frame into the query's, defaulting to
+`<db-path>/transform.txt` when that file exists; `--no-transform` says the two
+sessions already share a frame. Both are read on the generic path only, and the
+two other loaders differ in why:
+
+### `--threshold` is required
+
+There is no ground truth to sweep, so there is nothing to select an operating
+point *from*, and `--threshold-policy` does not exist here. Pick a threshold
+with `inlier eval` on a labelled sequence — its max-recall-at-100%-precision
+value is the usual choice — and fix it here. A default would be someone else's
+operating point silently applied to your robot.
+
+### The poses are odometry
+
+They accumulate submaps, they may bound the search, and they fill two
+diagnostic columns. **They never accept or reject a closure** — that is the
+verification score against the threshold, and nothing else. The record says
+`pose_source: "odometry"` and `ground_truth: null` so the file cannot be
+mistaken for an evaluation.
+
+> ⚠️ **`--search-radius` here is not the oracle it is in `inlier eval`.** In
+> [online-lcd](#--search-radius) the radius is measured against the
+> *ground-truth* pose, which a deployed system does not have, so it inflates
+> every metric. Here it is measured against the same drifted odometry the
+> running system already has, which is what a SLAM front-end actually does —
+> a scope choice, not a cheat. Same flag, opposite status, and
+> `candidate_filter.pose_source` in the results records which one ran.
+
+### What it writes
+
+| file | what |
+|---|---|
+| `closures_<tag>.csv` | the product: one row per accepted closure, with its 6-DoF constraint and match quality |
+| `scores_<tag>.npz` | the raw per-stage score matrices — **no decisions applied** |
+| `scores_<tag>.png` | those matrices drawn, one panel per stage |
+| `scores_<tag>.csv` | the same, readable: top-`--top-k` candidates per query, all stages joined |
+| `per_pair_verify_<tag>.csv` | the *unrefined* verify pose, so GICP cannot erase it |
+| `ranked_<tag>.csv` | stage-1 ranking |
+| `trajectory_<tag>.png` | the closures drawn, in one neutral colour |
+| `run_<tag>.json` | provenance, config, timing — and no metrics |
+
+### Watching it run — `--live`
+
+By default the run works stage by stage: encode the whole session, shortlist
+everything, then rerank, verify and refine. `--live` reorders it into the loop
+a deployed system actually runs — one frame at a time, accumulate, encode,
+match, refine, draw — in a 3D viewer that opens **paused**:
+
+```bash
+pip install -e ".[viz]"          # pyridescence; not part of [eval]
+
+inlier run --dataset-type kitti --dataset /data/kitti --sequence 00 \
+    --n-scans 10 --exclusion seconds=30 --threshold 0.35 \
+    -o results/run --live
+```
+
+Controls are buttons, not keys: play/pause, single-step, an fps cap (0 for
+free-run), and checkboxes for the scan, keypoints, map and camera follow.
+Turning the map off clears what is already drawn.
+
+`--live` needs a display. `inlier doctor` reports `pyridescence` as a warning
+rather than a failure when it is missing, since every other command runs
+without it.
 
 ## Benchmarking the Backends
 

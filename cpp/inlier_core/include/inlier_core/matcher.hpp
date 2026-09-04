@@ -25,7 +25,12 @@ class Matcher {
   /// Register one database scan (unpacks token_id once).
   void Add(int64_t database_id, const std::vector<uint64_t> &token_id);
   void Reset();
-  /// Stack the per-scan histograms into the dense HM matrix. Idempotent.
+  /// Pre-allocate room for `n` scans so per-frame latency stays flat
+  /// instead of spiking on a vector realloc (online protocols).
+  void Reserve(size_t n);
+  /// Stack the per-scan histograms into the dense HM matrix. Append-only
+  /// and idempotent: rows already built are kept, only scans added since
+  /// the last call are filled in.
   void Finalize();
   size_t size() const { return db_ids_.size(); }
   bool finalized() const { return finalized_; }
@@ -34,9 +39,15 @@ class Matcher {
 
   /// topk_override >= 0 / topk_pct_override >= 0 replicate the call-time
   /// arguments of the Python methods (which take precedence over config).
+  /// max_db_index >= 0 restricts the search to the first max_db_index
+  /// scans in insertion order (exclusive bound), so causal exclusion
+  /// happens inside the scoring loop rather than by discarding results
+  /// afterwards -- which would silently cost recall whenever the excluded
+  /// frames dominate the top-k.
   ShortlistResult Shortlist(const std::vector<uint64_t> &query_token_id,
                             const ShortlistConfig &cfg, int topk_override,
-                            double topk_pct_override);
+                            double topk_pct_override,
+                            int64_t max_db_index = -1);
 
   BeamResult BeamScore(const std::vector<uint64_t> &query_token_id,
                        const std::vector<int64_t> &candidate_ids,

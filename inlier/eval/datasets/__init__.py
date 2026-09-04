@@ -10,10 +10,13 @@ from typing import Dict, Type
 from inlier.eval.datasets.base import Sequence, SequenceSource, load_transform
 from inlier.eval.datasets.generic import Generic_Handler, GenericSource
 from inlier.eval.datasets.helipr import HeLiPR_Handler, HeLiPRSource
+from inlier.eval.datasets.kitti import (KITTI_Handler, KITTISource,
+                                        read_calib_tr)
 
 REGISTRY: Dict[str, Type] = {
     HeLiPRSource.name: HeLiPRSource,
     GenericSource.name: GenericSource,
+    KITTISource.name: KITTISource,
 }
 
 
@@ -45,6 +48,9 @@ __all__ = [
     "GenericSource",
     "HeLiPR_Handler",
     "HeLiPRSource",
+    "KITTI_Handler",
+    "KITTISource",
+    "read_calib_tr",
     "Sequence",
     "SequenceSource",
     "get_source",

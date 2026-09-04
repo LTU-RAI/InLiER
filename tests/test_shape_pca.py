@@ -3,6 +3,10 @@
 Eigendecompositions differ at the LSB between LAPACK and Eigen, so lps
 uses allclose and class agreement allows rare flips at bin/argmax
 boundaries.
+
+``InLiER`` here is the numpy reference, not ``inlier.core.InLiER``: the
+latter's ``encode`` is a C++ override, so the full-encode test at the bottom
+would otherwise compare the core against itself.
 """
 
 from __future__ import annotations
@@ -13,7 +17,7 @@ import pytest
 from inlier import _inlier_pybind as ip
 from inlier.core import _cfg_bridge as bridge
 from inlier.core.Dataclasses import InLiER_Config
-from inlier.core.InLiER import InLiER
+from inlier.core.reference.InLiER import InLiER
 
 RADIUS = 1.5
 MIN_NEIGHBORS = 8
