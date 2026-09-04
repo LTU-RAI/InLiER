@@ -312,20 +312,38 @@ def test_the_alignment_panel_puts_the_candidate_on_the_query():
     np.testing.assert_allclose(drawn, _to_world(q_pts, q_pose), atol=1e-5)
 
 
-def test_image_panels_are_viridis_and_survive_a_flat_descriptor():
-    """An all-zero descriptor must not divide by a zero range."""
-    from inlier.viz.live import _VIRIDIS, _image_u8
+def test_image_panels_ramp_and_survive_a_flat_descriptor():
+    """An all-zero descriptor must not divide by a zero range.
+
+    The ramps are the true matplotlib ones, endpoints included: these panels
+    are read against the figure `inlier encode --viz` writes for the same
+    arrays, and a shifted ramp would make the two disagree about what a colour
+    means.
+    """
+    from inlier.viz.live import _INFERNO, _VIRIDIS, _image_u8
 
     flat = _image_u8(np.zeros((4, 5)))
     assert flat.shape == (4, 5, 3)
-    # Uniform, and at viridis's low end rather than black.
     assert len(np.unique(flat.reshape(-1, 3), axis=0)) == 1
     np.testing.assert_array_equal(flat[0, 0], _VIRIDIS[0].astype(np.uint8))
     assert _image_u8(np.zeros((0, 3))).shape == (1, 1, 3)
 
-    ramp = _image_u8(np.arange(16.0).reshape(4, 4))
-    np.testing.assert_array_equal(ramp[0, 0], _VIRIDIS[0].astype(np.uint8))
-    np.testing.assert_array_equal(ramp[-1, -1], _VIRIDIS[-1].astype(np.uint8))
+    # Rows come back flipped, because the matplotlib panels these are read
+    # against are drawn with origin="lower": the array's first row belongs at
+    # the bottom of the image, not the top.
+    for lut in (_VIRIDIS, _INFERNO):
+        ramp = _image_u8(np.arange(16.0).reshape(4, 4), lut)
+        np.testing.assert_array_equal(ramp[-1, 0], lut[0].astype(np.uint8))
+        np.testing.assert_array_equal(ramp[0, -1], lut[-1].astype(np.uint8))
+
+    # A span pins the scale the way imshow's vmin/vmax do, so a half-full cell
+    # is drawn at the middle of the ramp rather than at the top of it.
+    half = _image_u8(np.full((2, 2), 5.0), _INFERNO, (0.0, 10.0))
+    mid = np.round(_INFERNO[15:17].mean(axis=0)).astype(np.uint8)  # 0.5 * 31
+    np.testing.assert_array_equal(half[0, 0], mid)
+    np.testing.assert_array_equal(
+        _image_u8(np.full((2, 2), 10.0), _INFERNO, (0.0, 10.0))[0, 0],
+        _INFERNO[-1].astype(np.uint8))
 
 
 
@@ -413,12 +431,64 @@ def test_a_stage_that_did_not_run_reports_zero_for_that_frame(sequence, tmp_path
     assert seen[0]["gicp"] == 0.0
 
 
+def test_panel_textures_are_uploaded_bgr(sequence, tmp_path, drawn):
+    """`glk::create_texture` hands GL `GL_BGR` for a 3-channel image.
+
+    It takes a `cv::Mat`, and OpenCV images are BGR (`glk/texture_opencv.hpp`).
+    A numpy array is RGB, so an unswapped upload puts viridis's yellow end on
+    screen as cyan -- which still looks like a colour map, just not the one
+    every other picture of these descriptors uses.
+    """
+    from inlier.viz.live import _INFERNO, _VIRIDIS, _bgr
+
+    rgb = np.array([[[253, 231, 37]]], dtype=np.uint8)      # viridis, top end
+    np.testing.assert_array_equal(_bgr(rgb), [[[37, 231, 253]]])
+    assert _bgr(rgb).flags["C_CONTIGUOUS"], "pybind11 needs a contiguous buffer"
+
+    log = _drive(_spec(sequence, tmp_path, live=True), drawn)
+    uploaded = log["textures"]
+    assert uploaded, "no panel texture was ever built"
+    # These descriptors are sparse, so a panel's most common colour is its
+    # empty cell -- the bottom of the ramp exactly, with no interpolation to
+    # blur the comparison.  It has to be that colour *reversed*; read forwards
+    # it lands on neither ramp, since neither is symmetric.
+    ends = {tuple(int(v) for v in np.round(lut[0]))[::-1]
+            for lut in (_VIRIDIS, _INFERNO)}
+    for image in uploaded:
+        assert image.dtype == np.uint8 and image.shape[2] == 3
+        colours, counts = np.unique(image.reshape(-1, 3), axis=0,
+                                    return_counts=True)
+        common = tuple(int(v) for v in colours[counts.argmax()])
+        assert common in ends, f"{common} is on neither ramp, read as BGR"
+
+
 def test_every_descriptor_panel_is_drawn_the_same_width():
-    """B is N_a columns where H and R are N_r*N_s; only scale evens them up."""
-    from inlier.viz.live import PANEL_WIDTH_PX
+    """B is N_a columns where H and R are N_r*N_s; magnification evens them up.
+
+    Most of that magnification happens in numpy, at whole cells, precisely so
+    the GPU is not left filtering a 10x140 array across half the window --
+    that is what made the panels look low-resolution.  What reaches `scale` is
+    only the fractional remainder, and the two together still have to land on
+    one width for all three panels.
+    """
+    from inlier.viz.live import PANEL_WIDTH_PX, _blocks
 
     for cols in (140, 60, 1):
-        assert round(PANEL_WIDTH_PX / max(1, cols) * cols) == PANEL_WIDTH_PX
+        block = max(1, PANEL_WIDTH_PX // cols)
+        scale = PANEL_WIDTH_PX / (cols * block)
+        assert round(cols * block * scale) == PANEL_WIDTH_PX
+        # Whatever is left for the GPU is a touch of stretch, not the 4x-9x
+        # blur-up the panels used to be drawn with.
+        assert 1.0 <= scale < 2.0
+
+    # The upsample is nearest-neighbour: a cell becomes a block of one colour,
+    # with no invented values between two counts.
+    image = np.arange(6, dtype=np.uint8).reshape(2, 3, 1).repeat(3, axis=2)
+    grown = _blocks(image, 4)
+    assert grown.shape == (8, 12, 3)
+    assert len(np.unique(grown.reshape(-1, 3), axis=0)) == 6
+    np.testing.assert_array_equal(grown[:4, :4], np.broadcast_to(image[0, 0], (4, 4, 3)))
+    assert _blocks(image, 1) is image
 
 
 def test_the_scene_is_anchored_so_float32_can_hold_it():
@@ -485,6 +555,8 @@ class _Recorder:
 
     def __getattr__(self, name):
         def call(*args, **kwargs):
+            if name == "create_texture":
+                self.log.setdefault("textures", []).append(args[0])
             if args and isinstance(args[0], str):
                 self.log.setdefault(name, []).append(args[0])
             else:
@@ -566,10 +638,13 @@ def test_the_viewer_survives_a_single_session_run(sequence, tmp_path, drawn):
     assert any(n.startswith("closure/") for n in log["update_thin_lines"]), \
         "the planted revisits produced no closure edge"
     # All three descriptor stages, not just one: H is the token histogram, R is
-    # the row stage 1 scores, B is the BEAM elevation code.
+    # the row stage 1 scores, A is the BEAM elevation code.
     from inlier.viz.live import PANEL_ORDER
 
     assert set(log["update_image"]) == set(PANEL_ORDER)
+    # Black behind all of it -- the default clear colour is grey, which eats
+    # the bottom of the scan's grey-by-height ramp.
+    assert "set_clear_color" in log
     # The scan, the keypoints and the pose triad are per-vertex coloured, so
     # they arrive as drawables rather than through update_points.
     assert {"cur/cloud", "cur/kp", "cur/pose"} <= set(log["update_drawable"])

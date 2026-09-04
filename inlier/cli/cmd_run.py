@@ -189,7 +189,7 @@ def _sources(args, cross: bool, quiet: bool):
     stride_q = n_q if args.stride_q is None else args.stride_q
 
     if args.dataset_type == "helipr":
-        from inlier.eval.overlap import parse_pair
+        from inlier.eval.datasets.helipr import parse_pair
 
         require_flags(args, ["dataset", "db-sequence", "q-sequence", "pair"],
                       "helipr (cross-session)")

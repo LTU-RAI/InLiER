@@ -38,12 +38,12 @@ import numpy as np
 
 #: Voxel size for the points kept in the accumulated map, in metres.  The map
 #: is context, not data: it exists to show where the robot has been.
-MAP_VOXEL = 1.0
+MAP_VOXEL = 1.5
 #: Voxel size for the current submap.  A HeLiPR scan is half a million points
 #: and re-uploading all of them every frame is 7 MB of traffic for detail no
 #: screen resolves; a quarter-metre grid keeps the shape and a tenth of the
 #: points.
-CUR_VOXEL = 0.25
+CUR_VOXEL = 0.5
 #: Keyframes between prior-map deposits, cross-session only.  Reading every one
 #: before the run starts costs minutes of disk for a picture a stride gives.
 DB_MAP_STRIDE = 20
@@ -58,17 +58,17 @@ MAP_FLUSH = 20
 #: multiplier on the base size, which is why nothing drawn with it stood out.
 #: Metric so the map stays readable as you zoom: keypoints and keyframes are
 #: markers and should hold their real-world size, the clouds are texture.
-KP_SIZE = 0.5
-NODE_SIZE = 1.0
-CLOUD_SIZE = 0.25
-MAP_SIZE = 0.1
+KP_SIZE = 0.33
+NODE_SIZE = 0.75
+CLOUD_SIZE = 0.1
+MAP_SIZE = 0.05
 
 #: Flat colours, for the things that are not height-coded.  The scan and its
 #: keypoints get per-vertex ramps instead (see `_height_colors`); what is left
 #: is the map, which stays dim and uniform so it reads as background, and the
 #: trajectory, which has to stay findable on top of everything.
 TRAJ_COLOR = (1.00, 0.85, 0.10, 1.0)
-MAP_COLOR = (0.38, 0.41, 0.46, 1.0)
+MAP_COLOR = (0.38, 0.41, 0.46, 0.3)
 DB_MAP_COLOR = (0.30, 0.34, 0.40, 1.0)
 DB_TRAJ_COLOR = (0.20, 0.47, 0.72, 1.0)
 CLOSURE_COLOR = (0.18, 0.90, 0.44, 1.0)
@@ -81,13 +81,41 @@ CLOSURE_COLOR = (0.18, 0.90, 0.44, 1.0)
 #: three stages of collapsing, so giving them separate ramps would invent a
 #: distinction the data does not have.  Turbo codes keypoint height, where the
 #: job is the opposite: pick the colours apart at a glance.
+#: Viridis and inferno, sampled from matplotlib at 32 anchors and written out
+#: here rather than imported: matplotlib is in the ``[eval]`` extra and the
+#: viewer is in ``[viz]``, so a live run must not need the evaluation stack to
+#: colour a panel.  32 rather than 16 because the ramps are not linear in RGB
+#: -- interpolating between 16 anchors visibly missed viridis's blue-green
+#: middle, and these panels are read against the matplotlib ones that
+#: ``inlier encode --viz`` writes.
+#:
+#: Which panel gets which is that figure's choice, not a new one: H and R are
+#: viridis there, A is inferno, and the endpoints are the true ones, so a
+#: colour means the same thing in both pictures.
 _VIRIDIS = np.array([
-    [ 68,   1,  84], [ 72,  26, 108], [ 71,  47, 125], [ 65,  68, 135],
-    [ 57,  86, 140], [ 49, 104, 142], [ 42, 120, 142], [ 35, 136, 142],
-    [ 31, 152, 139], [ 34, 168, 132], [ 53, 183, 121], [ 84, 197, 104],
-    [122, 209,  81], [165, 219,  54], [210, 226,  27], [253, 231,  37],
+    [ 68,   1,  84], [ 71,  13,  96], [ 72,  24, 106], [ 72,  35, 116],
+    [ 71,  46, 124], [ 69,  56, 130], [ 66,  65, 134], [ 62,  74, 137],
+    [ 58,  84, 140], [ 54,  93, 141], [ 50, 101, 142], [ 46, 109, 142],
+    [ 43, 117, 142], [ 40, 125, 142], [ 37, 132, 142], [ 34, 140, 141],
+    [ 31, 148, 140], [ 30, 156, 137], [ 32, 163, 134], [ 37, 171, 130],
+    [ 46, 179, 124], [ 58, 186, 118], [ 72, 193, 110], [ 88, 199, 101],
+    [108, 205,  90], [127, 211,  78], [147, 215,  65], [168, 219,  52],
+    [192, 223,  37], [213, 226,  26], [234, 229,  26], [253, 231,  37],
 ], dtype=np.float32)
 
+_INFERNO = np.array([
+    [  0,   0,   4], [  4,   3,  18], [ 11,   7,  36], [ 21,  11,  55],
+    [ 35,  12,  76], [ 49,  10,  92], [ 62,   9, 102], [ 76,  12, 107],
+    [ 90,  17, 110], [103,  22, 110], [116,  26, 110], [128,  31, 108],
+    [143,  36, 105], [155,  41, 100], [168,  46,  95], [180,  51,  89],
+    [193,  58,  80], [204,  66,  72], [215,  75,  63], [224,  85,  54],
+    [233,  97,  43], [239, 110,  33], [245, 123,  23], [248, 137,  12],
+    [251, 153,   6], [252, 168,  13], [251, 184,  29], [249, 199,  47],
+    [245, 217,  73], [242, 232, 101], [243, 245, 134], [252, 255, 164],
+], dtype=np.float32)
+
+#: Turbo, for the keypoints: they sit on top of the grey scan and have to be
+#: findable in it, which wants a ramp that changes hue fast.
 _TURBO = np.array([
     [ 48,  18,  59], [ 65,  67, 167], [ 71, 113, 233], [ 62, 155, 254],
     [ 34, 197, 226], [ 26, 228, 182], [ 70, 248, 132], [136, 255,  78],
@@ -108,7 +136,7 @@ _GREY = np.linspace(60.0, 210.0, 16)[:, None].repeat(3, axis=1).astype(np.float3
 #:
 #: Without an explicit order the viewer lays panels out in whatever sequence
 #: they were first registered, which is what put them on top of each other.
-PANEL_ORDER = {"H  histogram": 0, "R  MINT row": 1, "B  BEAM elevation": 2}
+PANEL_ORDER = {"H  histogram": 0, "R  MINT row": 1, "A  BEAM elevation": 2}
 #: Every panel is drawn this wide, whatever its column count -- H and R are
 #: N_r*N_s across, B is only N_a, and left to a shared magnification B came out
 #: less than half the width of the other two.  Height follows from the aspect,
@@ -130,6 +158,9 @@ STAGE_LABELS = (("voxel", "voxel"), ("encode", "encode"), ("s1", "MINT"),
 #: The pose triad: short enough not to spear the scan, thick enough to see.
 #: Drawn as `glk.Lines`, which takes a real thickness -- the `coordinate_system`
 #: primitive is one-pixel lines whose only knob is overall scale.
+#: The window's background.  RGBA, as `set_clear_color` takes it.
+BG_COLOR = (0.0, 0.0, 0.0, 1.0)
+
 AXIS_LENGTH = 3.0
 AXIS_THICKNESS = 0.25
 
@@ -229,14 +260,53 @@ def _height_colors(points: np.ndarray, lut: np.ndarray,
     return rgba
 
 
-def _image_u8(values: np.ndarray, lut: np.ndarray = _VIRIDIS) -> np.ndarray:
-    """A 2-D array as an RGB image, normalised to its own range."""
+def _bgr(image: np.ndarray) -> np.ndarray:
+    """RGB to the channel order the texture upload actually reads.
+
+    ``glk::create_texture`` takes a ``cv::Mat`` and hands GL ``GL_BGR`` for a
+    3-channel image (``glk/texture_opencv.hpp``), because OpenCV images are
+    BGR.  A numpy array arrives as RGB, so without this swap viridis's yellow
+    end uploads as cyan -- close enough to a colour map to look like one, and
+    wrong everywhere.  Swapped here rather than in :func:`_image_u8` so that
+    function keeps producing what matplotlib would, which is what the panels
+    are checked against.
+    """
+    return np.ascontiguousarray(image[..., ::-1])
+
+
+def _blocks(image: np.ndarray, factor: int) -> np.ndarray:
+    """Nearest-neighbour upsample, so a descriptor cell is a crisp square.
+
+    ``update_image`` magnifies the texture on the GPU with the driver's
+    filtering, which blurs a 10x140 array across half a window and reads as a
+    low-resolution smear.  Growing the array here instead keeps every cell
+    edge sharp -- these are discrete counts, and a gradient between two of
+    them is a value the descriptor does not have.
+    """
+    if factor <= 1:
+        return image
+    return np.repeat(np.repeat(image, factor, axis=0), factor, axis=1)
+
+
+def _image_u8(values: np.ndarray, lut: np.ndarray = _VIRIDIS,
+              span: Optional[tuple] = None) -> np.ndarray:
+    """A 2-D array as an RGB image, in matplotlib's row order.
+
+    ``span`` pins the colour scale the way ``imshow(vmin=, vmax=)`` does; with
+    no span the array is normalised to its own range, which is what matplotlib
+    does when neither is given.
+
+    The rows come back flipped because ``inlier/viz/figures.py`` draws every
+    one of these arrays with ``origin="lower"`` -- row 0 at the bottom -- and
+    the viewer's textures start at the top.  Without the flip the same
+    descriptor is upside down in the two pictures.
+    """
     a = np.asarray(values, dtype=np.float64)
     if a.size == 0:
         return np.zeros((1, 1, 3), dtype=np.uint8)
-    lo, hi = float(a.min()), float(a.max())
+    lo, hi = span if span is not None else (float(a.min()), float(a.max()))
     norm = np.zeros_like(a) if hi <= lo else (a - lo) / (hi - lo)
-    return _ramp(norm, lut).round().astype(np.uint8)
+    return _ramp(np.flipud(norm), lut).round().astype(np.uint8)
 
 
 class LiveViewer:
@@ -246,6 +316,9 @@ class LiveViewer:
         self._glk, self._guik, self._imgui = _import_pyridescence()
         self._viewer = self._guik.LightViewer.instance(title=title)
         self._viewer.use_orbit_camera_control(200.0)
+        # Black, not the default grey: the scan is grey-coded by height, and a
+        # grey ground behind it takes the bottom of that ramp with it.
+        self._viewer.set_clear_color(np.array(BG_COLOR, dtype=np.float32))
         self._threshold = float(threshold)
 
         # Paused on frame 0: a run opens with the first frame drawn and waits.
@@ -480,21 +553,34 @@ class LiveViewer:
         N_h, N_r, N_s, N_a = self._grid
         d = describe(tokens.token_id, N_h, N_r, N_s, N_a)
 
+        # Colour map and scale per panel, both taken from the matplotlib figure
+        # `inlier encode --viz` writes, so the same descriptor looks the same
+        # in both.  H and R autoscale there; A is pinned to 0..N_h, which is
+        # the popcount's real range -- autoscaling it would paint a cell
+        # holding 3 of 10 slices in the colour of a full one.
         panels = (
             # H: the token histogram, azimuth collapsed. (N_h, N_r*N_s)
-            ("H  histogram", d.full),
+            ("H  histogram", d.full, _VIRIDIS, None),
             # R: the row stage 1 actually scores, height collapsed too.  One
             # row of N_r*N_s, tiled so it reads as a band and not a hairline.
-            ("R  MINT row", np.tile(d.compact[None, :], (MINT_ROWS, 1))),
-            # B: how many height slices each (radial, azimuth) cell holds.
-            ("B  BEAM elevation", d.beam_popcount),
+            ("R  MINT row", np.tile(d.compact[None, :], (MINT_ROWS, 1)),
+             _VIRIDIS, None),
+            # A: how many height slices each (radial, azimuth) cell holds.  The
+            # name is the one `inlier encode --viz` gives the same array.
+            ("A  BEAM elevation", d.beam_popcount, _INFERNO,
+             (0.0, float(max(N_h, 1)))),
         )
-        for name, values in panels:
+        for name, values, lut, span in panels:
             # Per-panel magnification, so all three come out the same width
-            # however many columns they happen to have.
-            scale = PANEL_WIDTH_PX / max(1, values.shape[1])
+            # however many columns they happen to have.  Most of it is done in
+            # numpy, at whole cells: what is left for `scale` is the fractional
+            # remainder, too small to blur anything visibly.
+            cols = max(1, values.shape[1])
+            block = max(1, PANEL_WIDTH_PX // cols)
+            image = _bgr(_blocks(_image_u8(values, lut, span), block))
+            scale = PANEL_WIDTH_PX / (cols * block)
             self._viewer.update_image(
-                name, self._glk.create_texture(_image_u8(values)),
+                name, self._glk.create_texture(image),
                 scale=scale, order=PANEL_ORDER[name])
 
     # -- ui ----------------------------------------------------------------

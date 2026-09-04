@@ -17,7 +17,7 @@ inlier --help
 | `inlier gt build` \| `validate` | build or sanity-check the overlap ground truth |
 | `inlier eval cross-session` | offline: full database vs full query sequence |
 | `inlier eval online-lcd` | online: one session, a growing database, causal matching |
-| `inlier run` | loop closures and 6-DoF poses on data with **no ground truth** |
+| `inlier run` | loop closures and 6-DoF poses on data with **no ground truth** — add `--live` to watch it frame by frame |
 | | (`helipr`, `generic` or `kitti` data — see [Your Own Data](custom-data.md)) |
 | `inlier play` | replay a finished run as an animation |
 | `inlier bench cpp-vs-py` | time the C++ core against the numpy reference |
@@ -523,6 +523,56 @@ signal at random and show a thinner funnel than the run produced. Max, not
 mean, because a mean would blend scored cells with unscored ones and turn `NaN`
 into a number. A reduced panel says so in its title.
 
+### Watching it run — `--live`
+
+By default the run works stage by stage: encode the whole session, shortlist
+everything, then rerank, verify and refine. `--live` reorders it into the loop
+a deployed system actually runs — one frame at a time, accumulate, encode,
+match, refine, draw — in a 3D viewer that opens **paused**:
+
+```bash
+pip install -e ".[viz]"          # pyridescence; not part of [eval]
+
+inlier run --dataset-type kitti --dataset /data/kitti --sequence 00 \
+    --n-scans 10 --exclusion seconds=30 --threshold 0.35 \
+    -o results/run --live
+```
+
+The closures are the **same closures**. Every stage in the pipeline is already
+a per-query loop with no state carried between queries — the one exception,
+the growing single-session database, is causal by construction — so processing
+frame by frame is the same arithmetic in a different loop order, not an
+approximation of it. Both drivers call the same per-query functions, and the
+test suite runs a sequence through each and compares `closures_*.csv`,
+`per_pair_verify_*.csv` and every matrix in `scores_*.npz` cell by cell.
+
+What differs is the cost: the query session is encoded **for real** rather than
+read back out of the descriptor cache, because an encoder that skipped its work
+would not be showing you a run. A prior map — cross-session, or a global
+database — is still built up front from the cache, since a deployment starts
+with its map already loaded. Nothing else changes; the same artifacts land in
+`-o` when the window closes.
+
+The window draws the map as it is built (deposited once per frame and never
+re-uploaded, so frame time does not grow with the session), the current submap
+in grey by height, its keypoints on top in colour, the pose triad, the
+trajectory with its keyframe nodes left visible, and a green edge between the
+two nodes of every closure as it is found. Alongside are the query's three
+descriptor stages — H, the full token histogram; R, the MINT row; A, the BEAM
+elevation codes — drawn with the colour maps and scales
+[`inlier encode --viz`](#inspecting-a-descriptor) uses for the same arrays, so
+the two pictures agree. Beside them, a panel with the frame counter, closure
+count, best score against the threshold, and this frame's milliseconds per
+stage.
+
+Controls are buttons, not keys: play/pause, single-step, an fps cap (0 for
+free-run), and checkboxes for the scan, keypoints, map and camera follow.
+Turning the map off clears what is already drawn.
+
+`--live` needs a display. `inlier doctor` reports `pyridescence` as a warning
+rather than a failure when it is missing, since every other command runs
+without it.
+
 ### Two things it does not do
 
 `inlier run` uses **deploy-mode** config, where the stage score thresholds you
@@ -539,6 +589,8 @@ can still reach verification.
 
 `inlier play` cannot replay a run: it needs the TP/FP labels a
 `candidates_*.csv` carries, and a run has no way to produce them honestly.
+`--live` is not a substitute for it either — it watches a run *happen*, once,
+with no labels to colour anything by; `play` scrubs a finished evaluation.
 
 ## Replaying a Run
 

@@ -668,6 +668,44 @@ def test_run_infers_the_mode(given, cross):
     assert resolve_mode(args) is cross
 
 
+@pytest.mark.parametrize("cross,given", [
+    (False, {"sequence": "Roundabout03", "sensor": "Ouster"}),
+    (True, {"db_sequence": "Roundabout01", "q_sequence": "Roundabout03",
+            "pair": "O-Aeva"}),
+])
+def test_run_builds_helipr_sources_in_both_modes(monkeypatch, cross, given):
+    """Both branches resolve their sources -- including the cross-session one.
+
+    That branch imported `parse_pair` from a module it no longer lives in, and
+    nothing noticed: every other test either stays single-session or builds a
+    DeploySpec directly, so the import was never executed.
+    """
+    from types import SimpleNamespace
+
+    from inlier.cli import cmd_run
+    from inlier.eval import datasets
+
+    built = []
+    monkeypatch.setattr(datasets, "HeLiPRSource",
+                        lambda *a, **k: built.append(a) or SimpleNamespace())
+
+    args = SimpleNamespace(
+        **{d: None for d in cmd_run.CROSS_DESTS + cmd_run.SINGLE_DESTS},
+        dataset_type="helipr", dataset="/data/HeLiPR")
+    for key, value in given.items():
+        setattr(args, key, value)
+
+    query, db = cmd_run._sources(args, cross, quiet=True)
+    assert query is not None
+    if not cross:
+        assert db is None
+        assert built == [("/data/HeLiPR", "Roundabout03", "Ouster")]
+    else:
+        # Query first, database second, and 'O-Aeva' is DB sensor then query.
+        assert built == [("/data/HeLiPR", "Roundabout03", "Aeva"),
+                         ("/data/HeLiPR", "Roundabout01", "Ouster")]
+
+
 def test_run_refuses_a_mix_of_the_two_modes(capsys, tmp_path):
     code, out = _run(capsys, "run", "--dataset-type", "generic",
                      "--dataset", str(tmp_path), "--sequence", "a",
